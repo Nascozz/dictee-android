@@ -17,12 +17,15 @@ data class AppSettings(
     val haptics: Boolean,
     val autoSpace: Boolean,
     val autoUpdate: Boolean,
+    /** Mistral : le texte s'écrit pendant qu'on parle (Voxtral Realtime). */
+    val realtime: Boolean,
     /** Fournisseurs pour lesquels une clé API est enregistrée. */
     val keyed: Set<String>,
 ) {
     val provider: Provider get() = Provider.fromId(providerId)
     fun modelFor(p: Provider): String = models[p.id]?.takeIf { it.isNotBlank() } ?: p.models.first()
     fun hasKey(p: Provider): Boolean = p.id in keyed
+    val useRealtime: Boolean get() = realtime && provider == Provider.MISTRAL
 }
 
 class SettingsStore(context: Context) {
@@ -41,6 +44,7 @@ class SettingsStore(context: Context) {
         haptics = prefs.getBoolean("haptics", true),
         autoSpace = prefs.getBoolean("auto_space", true),
         autoUpdate = prefs.getBoolean("auto_update", true),
+        realtime = prefs.getBoolean("realtime", true),
         keyed = Provider.entries.filter { prefs.contains("key_${it.id}") }.map { it.id }.toSet(),
     )
 
@@ -58,6 +62,7 @@ class SettingsStore(context: Context) {
     fun setHaptics(v: Boolean) = edit { putBoolean("haptics", v) }
     fun setAutoSpace(v: Boolean) = edit { putBoolean("auto_space", v) }
     fun setAutoUpdate(v: Boolean) = edit { putBoolean("auto_update", v) }
+    fun setRealtime(v: Boolean) = edit { putBoolean("realtime", v) }
 
     fun setApiKey(p: Provider, key: String?) = edit {
         if (key.isNullOrBlank()) remove("key_${p.id}") else putString("key_${p.id}", SecretBox.encrypt(key.trim()))

@@ -114,10 +114,22 @@ fun SettingsScreen() {
                 )
             }
 
+            if (provider == Provider.MISTRAL) {
+                Spacer(Modifier.height(14.dp))
+                Hairline()
+                Spacer(Modifier.height(6.dp))
+                SettingSwitch(
+                    "Temps réel",
+                    "Le texte s'écrit pendant que tu parles · Voxtral Realtime",
+                    s.realtime,
+                    store::setRealtime,
+                )
+            }
+
             Spacer(Modifier.height(18.dp))
             Hairline()
             Spacer(Modifier.height(18.dp))
-            Eyebrow("Modèle", Modifier.padding(bottom = 10.dp))
+            Eyebrow(if (s.useRealtime) "Modèle hors temps réel" else "Modèle", Modifier.padding(bottom = 10.dp))
             var model by remember(provider) { mutableStateOf(s.modelFor(provider)) }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 provider.models.forEach { m ->

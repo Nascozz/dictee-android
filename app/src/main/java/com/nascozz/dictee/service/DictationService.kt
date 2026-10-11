@@ -25,7 +25,9 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
 import com.nascozz.dictee.Graph
+import com.nascozz.dictee.audio.PcmStreamer
 import com.nascozz.dictee.audio.Recorder
+import com.nascozz.dictee.stt.MistralRealtime
 import com.nascozz.dictee.stt.SttException
 import com.nascozz.dictee.stt.SttRequest
 import com.nascozz.dictee.stt.Transcriber
@@ -63,11 +65,22 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private var transcribeJob: Job? = null
     private var refreshPending = false
 
+    // Temps réel (Mistral Voxtral Realtime)
+    private var live: MistralRealtime? = null
+    private var streamer: PcmStreamer? = null
+    private val liveText = StringBuilder()
+    private var liveField: LiveField? = null
+    private var liveDurationMs = 0L
+    private var fieldWritePending = false
+
+    /** Champ qu'on peut réécrire en direct : on garde ce qu'il y avait avant et après le curseur. */
+    private class LiveField(val node: AccessibilityNodeInfo, val original: String, val prefix: String, val suffix: String)
+
     override fun onServiceConnected() {
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         island = IslandView(this).also {
             it.listener = this
-            it.onWidthNeeded = ::resizeWindow
+            it.onSizeNeeded = { w, h -> resizeWindow(w, h) }
         }
         params = WindowManager.LayoutParams(
             0, 0,
@@ -169,7 +182,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         island.setHole(hole.diameter.toFloat())
         params.height = island.windowHeight
         params.y = hole.cy - params.height / 2
-        resizeWindow(island.windowWidthFor(hole.diameter.toFloat()), update = false)
+        resizeWindow(island.windowWidthFor(hole.diameter.toFloat()), params.height, update = false)
         runCatching { wm.addView(island, params) }.onSuccess {
             attached = true
             island.setState(IslandView.State.IDLE)
@@ -188,9 +201,10 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         }
     }
 
-    /** La fenêtre s'adapte à la taille de la pilule tout en restant centrée sur la caméra. */
-    private fun resizeWindow(width: Int, update: Boolean = true) {
+    /** La fenêtre suit la taille de l'île : centrée sur la caméra, le haut ne bouge pas. */
+    private fun resizeWindow(width: Int, height: Int, update: Boolean = true) {
         params.width = width
+        params.height = height
         params.x = hole.cx - width / 2
         if (update && attached) runCatching { wm.updateViewLayout(island, params) }
     }
@@ -231,11 +245,13 @@ class DictationService : AccessibilityService(), IslandView.Listener {
                 main.removeCallbacks(levelTick)
                 main.removeCallbacks(autoStop)
                 recorder.cancel()
+                cancelLive(restoreField = true)
                 vibrate(VibrationEffect.EFFECT_TICK)
                 resetToIdle()
             }
             Mode.TRANSCRIBING -> {
                 transcribeJob?.cancel()
+                cancelLive(restoreField = true)
                 resetToIdle()
             }
             else -> openApp()
@@ -256,6 +272,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             return
         }
         findFocusedEditable()?.let { target = it }
+        if (s.useRealtime) return startLive()
         if (!recorder.start()) {
             fail("Micro indisponible", "Micro")
             return
@@ -271,7 +288,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private val levelTick = object : Runnable {
         override fun run() {
             if (mode != Mode.RECORDING) return
-            island.addLevel(recorder.level())
+            island.addLevel(streamer?.level() ?: recorder.level())
             main.postDelayed(this, 55)
         }
     }
@@ -281,6 +298,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private fun stopRecording() {
         main.removeCallbacks(levelTick)
         main.removeCallbacks(autoStop)
+        if (live != null) return stopLive()
         val result = recorder.stop()
         if (result == null) {
             fail("Trop court : touche, parle, puis touche à nouveau", "Trop court")
@@ -323,6 +341,171 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             } finally {
                 file.delete()
             }
+        }
+    }
+
+    // --- Temps réel ------------------------------------------------------------------------------
+
+    private fun startLive() {
+        liveText.setLength(0)
+        liveField = prepareLiveField()
+        val session = MistralRealtime(Graph.settings.apiKey(com.nascozz.dictee.stt.Provider.MISTRAL).orEmpty(), liveListener)
+        val pcm = PcmStreamer { session.sendAudio(it) }
+        if (!pcm.start()) {
+            fail("Micro indisponible", "Micro")
+            return
+        }
+        session.start()
+        live = session
+        streamer = pcm
+        mode = Mode.RECORDING
+        busy = true
+        vibrate(VibrationEffect.EFFECT_CLICK)
+        island.setState(IslandView.State.RECORDING)
+        main.post(levelTick)
+        main.postDelayed(autoStop, MAX_RECORDING_MS)
+    }
+
+    private fun stopLive() {
+        val pcm = streamer
+        liveDurationMs = pcm?.durationMs ?: 0L
+        pcm?.stop()
+        streamer = null
+        if (liveDurationMs < 400 && liveText.isEmpty()) {
+            cancelLive(restoreField = true)
+            fail("Trop court : touche, parle, puis touche à nouveau", "Trop court")
+            return
+        }
+        mode = Mode.TRANSCRIBING
+        island.setState(IslandView.State.TRANSCRIBING)
+        vibrate(VibrationEffect.EFFECT_TICK)
+        live?.endAudio()
+    }
+
+    private val liveListener = object : MistralRealtime.Listener {
+        override fun onDelta(text: String) {
+            liveText.append(text)
+            if (mode != Mode.RECORDING && mode != Mode.TRANSCRIBING) return
+            if (liveField != null) {
+                scheduleFieldWrite()
+            } else if (mode == Mode.RECORDING) {
+                island.setCaption(liveText.toString().trim())
+                if (island.state == IslandView.State.RECORDING) island.setState(IslandView.State.LIVE)
+            }
+        }
+
+        override fun onDone(finalText: String) {
+            streamer?.let { liveDurationMs = it.durationMs; it.stop() }
+            streamer = null
+            live = null
+            main.removeCallbacks(levelTick)
+            main.removeCallbacks(autoStop)
+            main.removeCallbacks(writeField)
+            val text = finalText.ifBlank { liveText.toString() }.trim()
+            val field = liveField
+            liveField = null
+            if (text.isEmpty()) {
+                field?.let { setFieldText(it.node, it.original, it.prefix.length) }
+                fail("Je n'ai rien entendu", "Rien entendu")
+                return
+            }
+            var finalInField = text
+            if (field != null && Graph.settings.current.autoSpace) {
+                val after = field.suffix.firstOrNull()
+                if (after != null && !after.isWhitespace() && after !in ".,;:!?)]}»") finalInField = "$finalInField "
+            }
+            val inserted = if (field != null) {
+                setFieldText(field.node, field.prefix + finalInField + field.suffix, field.prefix.length + finalInField.length) ||
+                    insertText(text)
+            } else {
+                insertText(text)
+            }
+            Graph.history.add(text, "Mistral · temps réel", MistralRealtime.MODEL, liveDurationMs)
+            if (inserted) succeed("Inséré") else {
+                toast("Texte copié : colle-le où tu veux")
+                succeed("Copié")
+            }
+        }
+
+        override fun onError(message: String) {
+            live = null
+            fail(message)
+        }
+    }
+
+    /**
+     * Décide si on peut écrire en direct dans le champ : il faut connaître son contenu exact
+     * (pas de texte d'aide ambigu). Sinon, le texte s'affichera dans l'île.
+     */
+    private fun prepareLiveField(): LiveField? {
+        val node = target?.takeIf { runCatching { it.refresh() }.getOrDefault(false) } ?: findFocusedEditable() ?: return null
+        val rawText = node.text?.toString().orEmpty()
+        val hint = node.hintText?.toString()
+        val showingHint = node.isShowingHintText || (hint != null && rawText == hint)
+        val existing = if (showingHint) "" else rawText
+        var start = node.textSelectionStart
+        var end = node.textSelectionEnd
+        if (!showingHint && existing.isNotEmpty() && start <= 0 && end <= 0) return null
+        if (start < 0 || end < 0 || start > existing.length) {
+            start = existing.length
+            end = existing.length
+        }
+        if (start > end) start = end.also { end = start }
+        end = end.coerceAtMost(existing.length)
+        var prefix = existing.substring(0, start)
+        val before = prefix.lastOrNull()
+        if (Graph.settings.current.autoSpace && before != null && !before.isWhitespace() && before !in "([{\"'«/") prefix += " "
+        return LiveField(node, existing, prefix, existing.substring(end))
+    }
+
+    private fun scheduleFieldWrite() {
+        if (fieldWritePending) return
+        fieldWritePending = true
+        main.postDelayed(writeField, 90)
+    }
+
+    private val writeField = Runnable {
+        fieldWritePending = false
+        val field = liveField ?: return@Runnable
+        val text = liveText.toString().trimStart()
+        if (!setFieldText(field.node, field.prefix + text + field.suffix, field.prefix.length + text.length)) {
+            // L'appli refuse l'écriture directe : on bascule sur les sous-titres dans l'île.
+            liveField = null
+            if (mode == Mode.RECORDING) {
+                island.setCaption(liveText.toString().trim())
+                island.setState(IslandView.State.LIVE)
+            }
+        }
+    }
+
+    private fun setFieldText(node: AccessibilityNodeInfo, text: String, cursor: Int): Boolean {
+        val ok = node.performAction(
+            AccessibilityNodeInfo.ACTION_SET_TEXT,
+            Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) },
+        )
+        if (ok) {
+            node.performAction(
+                AccessibilityNodeInfo.ACTION_SET_SELECTION,
+                Bundle().apply {
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor)
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor)
+                },
+            )
+        }
+        return ok
+    }
+
+    private fun cancelLive(restoreField: Boolean) {
+        main.removeCallbacks(writeField)
+        fieldWritePending = false
+        streamer?.stop()
+        streamer = null
+        live?.cancel()
+        live = null
+        val field = liveField
+        liveField = null
+        if (restoreField && field != null && liveText.isNotEmpty()) {
+            setFieldText(field.node, field.original, field.prefix.length.coerceAtMost(field.original.length))
         }
     }
 
@@ -403,6 +586,9 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
     private fun fail(message: String, label: String = "Erreur") {
         if (mode == Mode.RECORDING) recorder.cancel()
+        main.removeCallbacks(levelTick)
+        main.removeCallbacks(autoStop)
+        cancelLive(restoreField = false)
         mode = Mode.FEEDBACK
         busy = true
         if (attached) {
@@ -462,6 +648,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
         recorder.cancel()
+        cancelLive(restoreField = false)
         scope.cancel()
         if (attached) runCatching { wm.removeViewImmediate(island) }
         attached = false

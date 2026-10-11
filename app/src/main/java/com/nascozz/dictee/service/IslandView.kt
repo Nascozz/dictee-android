@@ -11,6 +11,9 @@ import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.os.SystemClock
 import android.util.TypedValue
 import android.view.MotionEvent
@@ -40,12 +43,13 @@ class IslandView(context: Context) : View(context) {
         fun onBubbleLongPress()
     }
 
-    enum class State { HIDDEN, IDLE, RECORDING, TRANSCRIBING, SUCCESS, ERROR }
+    /** LIVE = enregistrement avec sous-titres en direct : l'île s'agrandit vers le bas. */
+    enum class State { HIDDEN, IDLE, RECORDING, LIVE, TRANSCRIBING, SUCCESS, ERROR }
 
     var listener: Listener? = null
 
-    /** Appelé quand la fenêtre doit changer de largeur (elle reste centrée sur la caméra). */
-    var onWidthNeeded: ((Int) -> Unit)? = null
+    /** Appelé quand la fenêtre doit changer de taille (centrée sur la caméra, haut fixe). */
+    var onSizeNeeded: ((Int, Int) -> Unit)? = null
 
     private val dp = resources.displayMetrics.density
     private val margin = (4 * dp).roundToInt()
@@ -54,6 +58,17 @@ class IslandView(context: Context) : View(context) {
     private var hole = 0f
     private var pillH = 34 * dp
     val windowHeight get() = (pillH + 2 * margin).roundToInt()
+    private val captionLines = 3
+    private val captionPad = 16 * dp
+    private val captionTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 15f, resources.displayMetrics)
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+    }
+    private val captionLineH = captionTextPaint.fontSpacing * 1.12f
+    private val captionH get() = captionLines * captionLineH + captionPad * 1.4f
+    private var caption = ""
+    private var captionLayout: StaticLayout? = null
 
     var state = State.HIDDEN
         private set
@@ -114,11 +129,22 @@ class IslandView(context: Context) : View(context) {
 
     /** Largeur de fenêtre minimale pour la taille de pilule actuelle. */
     fun windowWidthFor(pillWidth: Float) = (ceil(pillWidth) + 2 * margin).toInt().let { it + (it and 1) }
+    private fun windowHeightFor(h: Float) = (ceil(max(h, pillH)) + 2 * margin).toInt()
+
+    /** Texte en direct affiché sous la pilule (état LIVE). */
+    fun setCaption(text: String) {
+        caption = text
+        captionLayout = null
+        invalidate()
+    }
+
+    private fun liveWidth(): Float = min(hole + 290 * dp, resources.displayMetrics.widthPixels - 20 * dp)
 
     private fun targetWidth(s: State): Float = when (s) {
         State.HIDDEN -> hole
         State.IDLE -> hole + 88 * dp
         State.RECORDING -> hole + 188 * dp
+        State.LIVE -> liveWidth()
         State.TRANSCRIBING, State.SUCCESS, State.ERROR -> hole + 128 * dp
     }
 
@@ -130,7 +156,8 @@ class IslandView(context: Context) : View(context) {
         val previous = state
         state = s
         label = text
-        if (s == State.RECORDING) {
+        if (s == State.RECORDING) caption = ""
+        if (s == State.RECORDING && previous != State.LIVE) {
             levels.fill(0f)
             smoothLevel = 0f
             recordStart = SystemClock.uptimeMillis()
@@ -146,15 +173,25 @@ class IslandView(context: Context) : View(context) {
         }
 
         val toW = targetWidth(s)
-        val toH = if (s == State.HIDDEN) hole else pillH
-        val growing = toW >= curW
+        val toH = when (s) {
+            State.HIDDEN -> hole
+            State.LIVE -> pillH + captionH
+            else -> pillH
+        }
+        val growing = toW >= curW || toH > curH + 1
 
-        // Le contenu s'efface puis réapparaît une fois la pilule à sa nouvelle taille.
-        animateContent(if (s == State.HIDDEN) 0f else 1f, from = if (previous != s) 0f else contentAlpha, delay = if (growing) 120 else 60)
+        // Le contenu s'efface puis réapparaît une fois la pilule à sa nouvelle taille
+        // (sauf entre enregistrement et sous-titres, où le chrono reste affiché).
+        val recordingPair = previous in RECORDING_STATES && s in RECORDING_STATES
+        animateContent(
+            if (s == State.HIDDEN) 0f else 1f,
+            from = if (previous != s && !recordingPair) 0f else contentAlpha,
+            delay = if (growing) 120 else 60,
+        )
 
         val token = ++morphToken
         morphAnim?.cancel()
-        if (growing) onWidthNeeded?.invoke(windowWidthFor(toW * 1.08f))
+        if (growing) onSizeNeeded?.invoke(windowWidthFor(max(toW, curW) * 1.08f), windowHeightFor(max(toH, curH) * 1.04f))
         val fromW = curW
         val fromH = curH
         morphAnim = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -168,7 +205,7 @@ class IslandView(context: Context) : View(context) {
             }
             doOnEnd {
                 if (token != morphToken) return@doOnEnd
-                onWidthNeeded?.invoke(windowWidthFor(max(toW, hole)))
+                onSizeNeeded?.invoke(windowWidthFor(max(toW, hole)), windowHeightFor(toH))
                 onSettled?.invoke()
             }
             start()
@@ -209,15 +246,19 @@ class IslandView(context: Context) : View(context) {
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         pivotX = w / 2f
-        pivotY = h / 2f
+        pivotY = margin + pillH / 2f
     }
 
     override fun onDraw(canvas: Canvas) {
         if (curW <= 0.5f || curH <= 0.5f) return
         val cx = width / 2f
-        val cy = height / 2f
-        rect.set(cx - curW / 2, cy - curH / 2, cx + curW / 2, cy + curH / 2)
-        canvas.drawRoundRect(rect, curH / 2, curH / 2, pillPaint)
+        // Le haut de l'île reste collé à la caméra ; elle ne grandit que vers le bas.
+        val cy = margin + pillH / 2f
+        val top = margin + max(0f, (pillH - curH) / 2f)
+        rect.set(cx - curW / 2, top, cx + curW / 2, top + curH)
+        val radius = min(curH / 2, pillH / 2)
+        canvas.drawRoundRect(rect, radius, radius, pillPaint)
+        if (curH > pillH + 4 * dp) drawCaption(canvas, rect)
 
         val a = contentAlpha
         if (a > 0.01f && curW > hole + 24 * dp) {
@@ -234,7 +275,7 @@ class IslandView(context: Context) : View(context) {
                     drawMic(canvas, lc, cy, a)
                     drawMiniWave(canvas, rc, cy, a)
                 }
-                State.RECORDING -> {
+                State.RECORDING, State.LIVE -> {
                     drawTimer(canvas, lc, cy, a)
                     drawBars(canvas, rightStart, rightEnd, cy, a)
                 }
@@ -253,7 +294,40 @@ class IslandView(context: Context) : View(context) {
                 State.HIDDEN -> Unit
             }
         }
-        if (state == State.RECORDING || state == State.TRANSCRIBING) postInvalidateOnAnimation()
+        if (state in RECORDING_STATES || state == State.TRANSCRIBING) postInvalidateOnAnimation()
+    }
+
+    /** Les 3 dernières lignes du texte en direct, avec un curseur rouge qui clignote. */
+    private fun drawCaption(canvas: Canvas, r: RectF) {
+        val visible = ((r.height() - pillH) / captionH).coerceIn(0f, 1f)
+        if (visible <= 0.05f || caption.isEmpty()) return
+        val width = (liveWidth() - 2 * captionPad).toInt()
+        val layout = captionLayout ?: StaticLayout.Builder
+            .obtain(caption, 0, caption.length, captionTextPaint, width)
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setLineSpacing(0f, 1.12f)
+            .build()
+            .also { captionLayout = it }
+        val left = r.centerX() - width / 2f
+        val areaTop = r.top + pillH + 2 * dp
+        val areaBottom = r.bottom - captionPad * 0.7f
+        val first = max(0, layout.lineCount - captionLines)
+        canvas.save()
+        canvas.clipRect(left - 4 * dp, areaTop, left + width + 4 * dp, areaBottom)
+        canvas.translate(left, areaTop - layout.getLineTop(first))
+        captionTextPaint.alpha = (255 * visible * contentAlpha).toInt()
+        layout.draw(canvas)
+        if (state == State.LIVE && (SystemClock.uptimeMillis() / 530) % 2 == 0L) {
+            val last = layout.lineCount - 1
+            val x = layout.getLineRight(last) + 3 * dp
+            fill.color = RED
+            fill.alpha = (255 * visible).toInt()
+            canvas.drawRoundRect(
+                x, layout.getLineTop(last) + 3 * dp, x + 2.2f * dp, layout.getLineBottom(last) - 3 * dp,
+                1.1f * dp, 1.1f * dp, fill,
+            )
+        }
+        canvas.restore()
     }
 
     private fun drawMic(canvas: Canvas, x: Float, y: Float, a: Float) {
@@ -388,6 +462,7 @@ class IslandView(context: Context) : View(context) {
     }
 
     private companion object {
+        val RECORDING_STATES = setOf(State.RECORDING, State.LIVE)
         val RED = 0xFFFF4D6D.toInt()
         val RED_SOFT = 0xFFFF7A8E.toInt()
         val GREEN = 0xFF4ADE80.toInt()
