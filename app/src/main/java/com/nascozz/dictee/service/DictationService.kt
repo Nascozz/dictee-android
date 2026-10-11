@@ -441,6 +441,53 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         island.setState(IslandView.State.RECORDING)
         main.post(levelTick)
         main.postDelayed(autoStop, MAX_RECORDING_MS)
+        main.postDelayed(sentWatch, 600)
+    }
+
+    /** Surveille le champ pendant le direct : s'il se vide, le message vient d'être envoyé. */
+    private val sentWatch = object : Runnable {
+        override fun run() {
+            if (mode != Mode.RECORDING || live == null) return
+            if (liveWritten && Graph.settings.current.stopOnSend && fieldWasSent()) {
+                onMessageSent()
+                return
+            }
+            main.postDelayed(this, 300)
+        }
+    }
+
+    /**
+     * Vrai si le texte qu'on avait écrit a disparu et que le champ est redevenu vide
+     * (ou n'affiche plus que son texte d'aide, « Message » sur WhatsApp).
+     */
+    private fun fieldWasSent(): Boolean {
+        val field = liveField ?: return false
+        val last = lastFieldWrite ?: return false
+        if (!runCatching { field.node.refresh() }.getOrDefault(false)) return false
+        val shown = field.node.text?.toString().orEmpty()
+        if (shown == last) return false
+        if (shown.isBlank() || field.node.isShowingHintText || shown == field.node.hintText?.toString()) return true
+        // Texte d'aide non signalé (WhatsApp) : court, une ligne, curseur au début, et rien de notre dictée.
+        val cursor = field.node.textSelectionStart
+        return cursor <= 0 && shown.length <= 40 && '\n' !in shown && !last.contains(shown.trim())
+    }
+
+    /** Le message est parti : on arrête d'écouter, sans rien écrire de plus dans le champ vide. */
+    private fun onMessageSent() {
+        main.removeCallbacks(levelTick)
+        main.removeCallbacks(autoStop)
+        main.removeCallbacks(writeField)
+        fieldWritePending = false
+        streamer?.let { liveDurationMs = it.durationMs; it.stop() }
+        streamer = null
+        live?.cancel()
+        live = null
+        closePcm()?.delete()
+        liveField = null
+        Graph.usage.record(MistralRealtime.MODEL, liveDurationMs)
+        val text = liveFormatted().trim()
+        if (text.isNotEmpty()) Graph.history.add(text, "Mistral · temps réel", MistralRealtime.MODEL, liveDurationMs)
+        succeed("Envoyé")
     }
 
     private fun stopLive() {
@@ -740,6 +787,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
     private fun cancelLive(restoreField: Boolean) {
         main.removeCallbacks(writeField)
+        main.removeCallbacks(sentWatch)
         fieldWritePending = false
         streamer?.stop()
         streamer = null

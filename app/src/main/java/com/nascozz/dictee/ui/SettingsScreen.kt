@@ -266,6 +266,13 @@ fun SettingsScreen() {
         SectionCard(title = "Île") {
             SettingSwitch("Afficher l'île", "Quand un champ de texte est actif", s.bubbleEnabled, store::setBubbleEnabled)
             Hairline()
+            SettingSwitch(
+                "Arrêter à l'envoi",
+                "En temps réel, quand tu envoies le message, l'écoute s'arrête toute seule",
+                s.stopOnSend,
+                store::setStopOnSend,
+            )
+            Hairline()
             SettingSwitch("Vibrations", "Au début et à la fin de la dictée", s.haptics, store::setHaptics)
             Hairline()
             SettingSwitch("Espaces automatiques", "Autour du texte dicté si besoin", s.autoSpace, store::setAutoSpace)

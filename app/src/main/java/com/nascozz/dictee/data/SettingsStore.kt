@@ -27,6 +27,8 @@ data class AppSettings(
     /** Temps réel : retour à la ligne après une pause de [pauseSeconds]. */
     val pauseBreak: Boolean,
     val pauseSeconds: Float,
+    /** Temps réel : quand le message part (champ vidé), l'écoute s'arrête. */
+    val stopOnSend: Boolean,
     /** Fournisseurs pour lesquels une clé API est enregistrée. */
     val keyed: Set<String>,
 ) {
@@ -59,6 +61,7 @@ class SettingsStore(context: Context) {
         minimalPunctuation = prefs.getBoolean("minimal_punctuation", false),
         pauseBreak = prefs.getBoolean("pause_break", true),
         pauseSeconds = prefs.getFloat("pause_seconds", 2.5f),
+        stopOnSend = prefs.getBoolean("stop_on_send", true),
         keyed = Provider.entries.filter { prefs.contains("key_${it.id}") }.map { it.id }.toSet(),
     )
 
@@ -81,6 +84,7 @@ class SettingsStore(context: Context) {
     fun setMinimalPunctuation(v: Boolean) = edit { putBoolean("minimal_punctuation", v) }
     fun setPauseBreak(v: Boolean) = edit { putBoolean("pause_break", v) }
     fun setPauseSeconds(v: Float) = edit { putFloat("pause_seconds", v) }
+    fun setStopOnSend(v: Boolean) = edit { putBoolean("stop_on_send", v) }
 
     fun setApiKey(p: Provider, key: String?) = edit {
         if (key.isNullOrBlank()) remove("key_${p.id}") else putString("key_${p.id}", SecretBox.encrypt(key.trim()))
