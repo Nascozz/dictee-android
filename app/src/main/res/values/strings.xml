@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Dictée</string>
+    <string name="a11y_label">Bulle Dictée</string>
+    <string name="a11y_description">Affiche une petite bulle micro quand tu touches un champ de texte. Appuie dessus, parle, et le texte est écrit pour toi. Dictée lit uniquement le champ sélectionné pour y insérer ta transcription.</string>
+</resources>

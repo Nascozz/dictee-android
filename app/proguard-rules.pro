@@ -1,0 +1,4 @@
+-keep class com.nascozz.dictee.** { *; }
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
