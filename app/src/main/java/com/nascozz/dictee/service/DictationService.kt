@@ -448,32 +448,15 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private val sentWatch = object : Runnable {
         override fun run() {
             if (mode != Mode.RECORDING || live == null) return
-            if (liveWritten && Graph.settings.current.stopOnSend && fieldWasSent()) {
-                onMessageSent()
-                return
-            }
-            main.postDelayed(this, 300)
+            if (liveWritten && liveField != null && followUserEdits()) return
+            main.postDelayed(this, 250)
         }
     }
 
-    /**
-     * Vrai si le texte qu'on avait écrit a disparu et que le champ est redevenu vide
-     * (ou n'affiche plus que son texte d'aide, « Message » sur WhatsApp).
-     */
-    private fun fieldWasSent(): Boolean {
-        val field = liveField ?: return false
-        val last = lastFieldWrite ?: return false
-        if (!runCatching { field.node.refresh() }.getOrDefault(false)) return false
-        val shown = field.node.text?.toString().orEmpty()
-        if (shown == last) return false
-        if (shown.isBlank() || field.node.isShowingHintText || shown == field.node.hintText?.toString()) return true
-        // Texte d'aide non signalé (WhatsApp) : court, une ligne, curseur au début, et rien de notre dictée.
-        val cursor = field.node.textSelectionStart
-        return cursor <= 0 && shown.length <= 40 && '\n' !in shown && !last.contains(shown.trim())
-    }
 
     /** Le message est parti : on arrête d'écouter, sans rien écrire de plus dans le champ vide. */
     private fun onMessageSent() {
+        main.removeCallbacks(sentWatch)
         main.removeCallbacks(levelTick)
         main.removeCallbacks(autoStop)
         main.removeCallbacks(writeField)
@@ -485,8 +468,11 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         closePcm()?.delete()
         liveField = null
         Graph.usage.record(MistralRealtime.MODEL, liveDurationMs)
-        val text = liveFormatted().trim()
-        if (text.isNotEmpty()) Graph.history.add(text, "Mistral · temps réel", MistralRealtime.MODEL, liveDurationMs)
+        // Seulement ce qui était écrit au moment de l'envoi, pas un mot arrivé juste après.
+        val sent = TextFormatter.format(liveText.substring(0, writtenRawLen.coerceAtMost(liveText.length)), Graph.settings.current.formatOptions).trim()
+        if (sent.isNotEmpty()) Graph.history.add(sent, "Mistral · temps réel", MistralRealtime.MODEL, liveDurationMs)
+        // Pas de proposition de mise à jour ici : tu vas sûrement toucher l'île pour le message suivant.
+        offeredVersion = Updater.available?.versionCode ?: offeredVersion
         succeed("Envoyé")
     }
 
@@ -532,7 +518,11 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             main.removeCallbacks(levelTick)
             main.removeCallbacks(autoStop)
             main.removeCallbacks(writeField)
+            main.removeCallbacks(sentWatch)
             fieldWritePending = false
+            // Message envoyé pendant les derniers mots : on s'arrête là, sans rien réécrire
+            // (l'enregistrement du coût et de l'historique est fait par onMessageSent).
+            if (liveWritten && followUserEdits()) return
             // Déjà écrit en direct dans le champ : on garde exactement ce texte, on n'y retouche que pour
             // ajouter les derniers mots. Sinon, la version finale de Mistral (sans nos pauses).
             val raw = if (liveWritten || TextFormatter.PAUSE in liveText) liveText.toString()
@@ -540,7 +530,6 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             val text = TextFormatter.format(raw, Graph.settings.current.formatOptions).trim()
             Graph.usage.record(MistralRealtime.MODEL, liveDurationMs)
             closePcm()?.delete()
-            if (liveWritten) followUserEdits()
             val field = liveField
             liveField = null
             if (text.isEmpty()) {
@@ -622,6 +611,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
      * le premier mot dicté le remplacera.
      */
     private fun primeField(node: AccessibilityNodeInfo): FieldState? {
+        val shownBefore = node.text?.toString().orEmpty()
         clipboard().setPrimaryClip(ClipData.newPlainText("Dictée", " "))
         if (!node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) return null
         runCatching { node.refresh() }
@@ -629,7 +619,29 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         val cursor = node.textSelectionStart
         if (cursor <= 0 || cursor > text.length || text[cursor - 1] != ' ') return null
         val clean = text.removeRange(cursor - 1, cursor)
+        if (clean.isEmpty() && shownBefore.isNotBlank()) learnPlaceholder(node, shownBefore)
         return FieldState(clean, cursor - 1, cursor - 1)
+    }
+
+    // --- Textes d'aide (« Message » sur WhatsApp) -------------------------------------------------
+
+    private val placeholderPrefs by lazy { getSharedPreferences("placeholders", MODE_PRIVATE) }
+
+    /** Retient qu'un texte affiché dans les champs de cette appli n'est qu'un texte d'aide. */
+    private fun learnPlaceholder(node: AccessibilityNodeInfo, text: String) {
+        val pkg = node.packageName?.toString() ?: return
+        val t = text.trim()
+        if (t.isEmpty() || t.length > 40 || '\n' in t) return
+        val known = placeholderPrefs.getStringSet(pkg, emptySet()).orEmpty()
+        if (t !in known) placeholderPrefs.edit().putStringSet(pkg, known + t).apply()
+    }
+
+    /** Vrai si [shown] n'est que le texte d'aide du champ (signalé par l'appli ou appris). */
+    private fun isPlaceholder(node: AccessibilityNodeInfo, shown: String): Boolean {
+        if (shown.isEmpty()) return false
+        if (node.isShowingHintText || shown == node.hintText?.toString()) return true
+        val pkg = node.packageName?.toString() ?: return false
+        return shown.trim() in placeholderPrefs.getStringSet(pkg, emptySet()).orEmpty()
     }
 
     /** Contenu réel d'un champ et position du curseur. */
@@ -644,11 +656,14 @@ class DictationService : AccessibilityService(), IslandView.Listener {
      */
     private fun readField(node: AccessibilityNodeInfo): FieldState? {
         val rawText = node.text?.toString().orEmpty()
-        val hint = node.hintText?.toString()
-        val showingHint = node.isShowingHintText || (hint != null && rawText == hint)
+        val showingHint = isPlaceholder(node, rawText)
         var existing = if (showingHint) "" else rawText
         var start = node.textSelectionStart
         var end = node.textSelectionEnd
+        if (showingHint) {
+            start = 0
+            end = 0
+        }
 
         if (existing.isNotEmpty() && start <= 0 && end <= 0) {
             when (probeRealText(node, existing)) {
@@ -658,6 +673,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
                     end = 0
                 }
                 false -> {
+                    learnPlaceholder(node, existing)
                     existing = ""
                     start = 0
                     end = 0
@@ -711,7 +727,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private val writeField = Runnable {
         fieldWritePending = false
         if (liveField == null) return@Runnable
-        followUserEdits()
+        if (followUserEdits()) return@Runnable
         val field = liveField ?: return@Runnable
         val rawLen = liveText.length
         val text = liveTail(field)
@@ -750,21 +766,40 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     }
 
     /**
-     * Si tu as modifié le champ au clavier depuis notre dernière écriture, on adopte ta version :
-     * tout ce qui est avant la fin de la dictée devient le nouveau préfixe, et on écrira la suite après.
+     * À appeler avant chaque écriture directe. Renvoie true si le message vient d'être envoyé
+     * (champ vidé) : la dictée s'arrête et il ne faut plus rien écrire.
+     * Sinon, si tu as retouché le champ au clavier, on adopte ta version et on écrira la suite après.
      */
-    private fun followUserEdits() {
-        val field = liveField ?: return
-        val last = lastFieldWrite ?: return
-        if (!runCatching { field.node.refresh() }.getOrDefault(false)) return
+    private fun followUserEdits(): Boolean {
+        val field = liveField ?: return false
+        val last = lastFieldWrite ?: return false
+        if (!runCatching { field.node.refresh() }.getOrDefault(false)) return false
         val shown = field.node.text?.toString().orEmpty()
-        val current = if (field.node.isShowingHintText || shown == field.node.hintText?.toString()) "" else shown
-        if (current == last) return
-        val keepsSuffix = field.suffix.isNotEmpty() && current.endsWith(field.suffix)
-        val end = if (keepsSuffix) current.length - field.suffix.length else current.length
-        liveField = LiveField(field.node, field.original, current.substring(0, end), if (keepsSuffix) field.suffix else "", field.primed)
+        if (shown == last) return false
+
+        // Champ vidé : vide, texte d'aide connu, ou texte d'aide non signalé (court, curseur au début,
+        // et plus rien de notre dictée).
+        val cursor = field.node.textSelectionStart
+        val unflaggedHint = cursor <= 0 && shown.length <= 40 && '\n' !in shown && !last.contains(shown.trim())
+        if (shown.isBlank() || isPlaceholder(field.node, shown) || unflaggedHint) {
+            if (shown.isNotBlank()) learnPlaceholder(field.node, shown)
+            if (Graph.settings.current.stopOnSend || mode != Mode.RECORDING) {
+                onMessageSent()
+                return true
+            }
+            // On continue d'écouter, mais dans un champ vide : jamais « Message » devant.
+            liveField = LiveField(field.node, "", "", "", field.primed)
+            liveRawBase = writtenRawLen
+            lastFieldWrite = ""
+            return false
+        }
+
+        val keepsSuffix = field.suffix.isNotEmpty() && shown.endsWith(field.suffix)
+        val end = if (keepsSuffix) shown.length - field.suffix.length else shown.length
+        liveField = LiveField(field.node, field.original, shown.substring(0, end), if (keepsSuffix) field.suffix else "", field.primed)
         liveRawBase = writtenRawLen
-        lastFieldWrite = current
+        lastFieldWrite = shown
+        return false
     }
 
     /** Remplace le texte direct par la version finale ; une seconde tentative avec un nœud rafraîchi. */
