@@ -86,7 +86,7 @@ class IslandView(context: Context) : View(context) {
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         fontFeatureSettings = "tnum"
     }
-    private val mic = ContextCompat.getDrawable(context, R.drawable.ic_mic)!!.mutate().apply { setTint(VIOLET) }
+    private val mic = ContextCompat.getDrawable(context, R.drawable.ic_mic)!!.mutate().apply { setTint(Color.WHITE) }
     private val rect = RectF()
     private val checkPath = Path()
     private val checkSeg = Path()
@@ -265,8 +265,8 @@ class IslandView(context: Context) : View(context) {
 
     private fun drawMiniWave(canvas: Canvas, x: Float, y: Float, a: Float) {
         val hs = floatArrayOf(6f, 12f, 8f, 14f, 7f)
-        barPaint.color = VIOLET
-        barPaint.alpha = (255 * a).toInt()
+        barPaint.color = RED
+        barPaint.alpha = (255 * a * 0.85f).toInt()
         barPaint.strokeWidth = 2.4f * dp
         val step = 4.5f * dp
         val start = x - step * (hs.size - 1) / 2
@@ -311,7 +311,7 @@ class IslandView(context: Context) : View(context) {
     private fun drawSpinner(canvas: Canvas, x: Float, y: Float, a: Float) {
         val t = SystemClock.uptimeMillis()
         val r = 7.5f * dp
-        stroke.color = VIOLET
+        stroke.color = Color.WHITE
         stroke.alpha = (255 * a).toInt()
         rect.set(x - r, y - r, x + r, y + r)
         canvas.drawArc(rect, (t % 900) / 900f * 360f, 70f + 170f * abs(sin(t / 520.0)).toFloat(), false, stroke)
@@ -322,7 +322,7 @@ class IslandView(context: Context) : View(context) {
         val step = 9 * dp
         for (i in 0..2) {
             val phase = sin((t / 180.0) - i * 0.9).toFloat()
-            fill.color = VIOLET
+            fill.color = RED
             fill.alpha = (255 * a * (0.35f + 0.65f * max(0f, phase))).toInt()
             canvas.drawCircle(x + (i - 1) * step, y - max(0f, phase) * 2.5f * dp, 2.6f * dp, fill)
         }
@@ -388,7 +388,6 @@ class IslandView(context: Context) : View(context) {
     }
 
     private companion object {
-        val VIOLET = 0xFFB4A6FF.toInt()
         val RED = 0xFFFF4D6D.toInt()
         val RED_SOFT = 0xFFFF7A8E.toInt()
         val GREEN = 0xFF4ADE80.toInt()

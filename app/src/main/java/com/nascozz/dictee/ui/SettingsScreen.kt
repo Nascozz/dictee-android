@@ -3,7 +3,6 @@ package com.nascozz.dictee.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,20 +27,15 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
-import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
-import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,6 +67,8 @@ private val LANGUAGES = listOf(
     "ar" to "العربية",
 )
 
+private val FieldShape = RoundedCornerShape(18.dp)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen() {
@@ -86,13 +82,13 @@ fun SettingsScreen() {
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .imePadding()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         ScreenTitle("Réglages")
 
         SectionCard(title = "Fournisseur") {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Provider.entries.forEach { p ->
                     ProviderRow(p, selected = p == provider, hasKey = s.hasKey(p)) { store.setProvider(p) }
                 }
@@ -108,34 +104,43 @@ fun SettingsScreen() {
                 OutlinedTextField(
                     value = url,
                     onValueChange = { url = it; store.setCustomBaseUrl(it) },
-                    label = { Text("URL de base (ex. https://api.exemple.com/v1)") },
+                    label = { Text("URL de base") },
+                    placeholder = { Text("https://api.exemple.com/v1") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = FieldShape,
+                    colors = inkFieldColors(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(18.dp))
+            Hairline()
+            Spacer(Modifier.height(18.dp))
+            Eyebrow("Modèle", Modifier.padding(bottom = 10.dp))
             var model by remember(provider) { mutableStateOf(s.modelFor(provider)) }
-            OutlinedTextField(
-                value = model,
-                onValueChange = { model = it; store.setModel(provider, it) },
-                label = { Text("Modèle") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-            )
-            Spacer(Modifier.height(8.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 provider.models.forEach { m ->
                     FilterChip(
                         selected = model == m,
                         onClick = { model = m; store.setModel(provider, m) },
                         label = { Text(m) },
+                        shape = RoundedCornerShape(50),
+                        colors = inkChipColors(),
+                        border = inkChipBorder(model == m),
                     )
                 }
             }
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                value = model,
+                onValueChange = { model = it; store.setModel(provider, it) },
+                label = { Text("Ou un autre modèle") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                shape = FieldShape,
+                colors = inkFieldColors(),
+            )
         }
 
         SectionCard(title = "Langue") {
@@ -145,14 +150,17 @@ fun SettingsScreen() {
                         selected = s.language == code,
                         onClick = { store.setLanguage(code) },
                         label = { Text(label) },
+                        shape = RoundedCornerShape(50),
+                        colors = inkChipColors(),
+                        border = inkChipBorder(s.language == code),
                     )
                 }
             }
             Text(
-                "Choisir ta langue améliore la précision. « Auto » détecte toute seule.",
+                "Choisir ta langue améliore la précision.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
+                color = Ink.Faint,
+                modifier = Modifier.padding(top = 6.dp),
             )
         }
 
@@ -162,94 +170,90 @@ fun SettingsScreen() {
                 OutlinedTextField(
                     value = prompt,
                     onValueChange = { prompt = it; store.setPrompt(it) },
-                    placeholder = { Text("Noms propres, jargon, style… ex : Guillaume, Kotlin, Spokenly") },
+                    placeholder = { Text("Noms propres, jargon… ex : Guillaume, Kotlin, Spokenly") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = FieldShape,
+                    colors = inkFieldColors(),
                 )
             }
         }
 
-        SectionCard(title = "Bulle") {
-            SettingSwitch("Afficher la bulle", "Sur les champs de texte quand le clavier est ouvert", s.bubbleEnabled, store::setBubbleEnabled)
-            SettingSwitch("Vibrations", "Petit retour quand ça démarre et se termine", s.haptics, store::setHaptics)
-            SettingSwitch("Espaces automatiques", "Ajoute un espace avant/après le texte dicté si besoin", s.autoSpace, store::setAutoSpace)
+        SectionCard(title = "Île") {
+            SettingSwitch("Afficher l'île", "Quand un champ de texte est actif", s.bubbleEnabled, store::setBubbleEnabled)
+            Hairline()
+            SettingSwitch("Vibrations", "Au début et à la fin de la dictée", s.haptics, store::setHaptics)
+            Hairline()
+            SettingSwitch("Espaces automatiques", "Autour du texte dicté si besoin", s.autoSpace, store::setAutoSpace)
         }
 
         SectionCard(title = "Mises à jour") {
-            SettingSwitch(
-                "Mise à jour automatique",
-                "Installe les nouvelles versions publiées sur GitHub",
-                s.autoUpdate,
-                store::setAutoUpdate,
-            )
-            Spacer(Modifier.height(8.dp))
+            SettingSwitch("Automatiques", "Installe les nouvelles versions publiées", s.autoUpdate, store::setAutoUpdate)
+            Hairline()
+            Spacer(Modifier.height(14.dp))
             val update by Updater.state.collectAsStateWithLifecycle()
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Version ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyLarge)
+                    Text("Version ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleSmall.merge(TabularNums))
                     Text(
                         when (val u = update) {
                             Updater.State.Checking -> "Vérification…"
-                            Updater.State.UpToDate -> "Tu as la dernière version"
+                            Updater.State.UpToDate -> "À jour"
                             is Updater.State.Available -> "Version ${u.release.versionName} disponible"
-                            is Updater.State.Downloading -> "Téléchargement… ${(u.progress * 100).toInt()} %"
+                            is Updater.State.Downloading -> "Téléchargement ${(u.progress * 100).toInt()} %"
                             is Updater.State.Installing -> "Installation…"
                             is Updater.State.Failed -> u.message
                             Updater.State.Idle -> "github.com/${Updater.REPO}"
                         },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall.merge(TabularNums),
+                        color = Ink.Muted,
                     )
                 }
                 val available = update as? Updater.State.Available
                 if (available != null) {
-                    Button(onClick = { Updater.install(ctx, available.release) }) { Text("Installer") }
+                    PillButton("Installer") { Updater.install(ctx, available.release) }
                 } else {
-                    OutlinedButton(onClick = { Updater.check() }) { Text("Vérifier") }
+                    GhostButton("Vérifier") { Updater.check() }
                 }
             }
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
     }
 }
 
 @Composable
 private fun ProviderRow(p: Provider, selected: Boolean, hasKey: Boolean, onClick: () -> Unit) {
-    val border by animateColorAsState(
-        if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-        label = "border",
-    )
-    val bg by animateColorAsState(
-        if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f) else Color.Transparent,
-        label = "bg",
-    )
+    val bg by animateColorAsState(if (selected) Ink.SurfaceHigh else Color.Transparent, label = "bg")
+    val border by animateColorAsState(if (selected) Ink.LineStrong else Color.Transparent, label = "border")
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .border(BorderStroke(if (selected) 2.dp else 1.dp, border), RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(bg)
+            .border(1.dp, border, RoundedCornerShape(18.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier
-                .size(20.dp)
-                .clip(CircleShape)
-                .border(2.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (selected) Box(Modifier.size(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+        Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
+            if (selected) StatusDot(Ink.Red, size = 10.dp)
+            else Box(Modifier.size(10.dp).clip(CircleShape).border(1.5.dp, Ink.Faint, CircleShape))
         }
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(p.label, style = MaterialTheme.typography.titleSmall)
-            Text(p.tagline, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(p.label, style = MaterialTheme.typography.titleSmall, color = if (selected) Ink.Text else Ink.Muted)
+            Text(p.tagline, style = MaterialTheme.typography.bodySmall, color = Ink.Faint)
         }
         if (hasKey) {
-            Icon(Icons.Rounded.CheckCircle, contentDescription = "Clé enregistrée", tint = Success, modifier = Modifier.size(20.dp))
+            Text(
+                "CLÉ",
+                style = MaterialTheme.typography.labelSmall,
+                color = Ink.Green,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(Ink.Green.copy(alpha = 0.1f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            )
         }
     }
 }
@@ -265,15 +269,15 @@ private fun ApiKeyEditor(p: Provider, hasKey: Boolean) {
     if (hasKey && !editing) {
         val hint = remember(p, hasKey) { store.apiKey(p)?.takeLast(4).orEmpty() }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Rounded.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            StatusDot(Ink.Green)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text("Clé API enregistrée", style = MaterialTheme.typography.bodyLarge)
-                Text("•••• $hint", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Clé API enregistrée", style = MaterialTheme.typography.titleSmall)
+                Text("•••• $hint", style = MaterialTheme.typography.bodySmall.merge(TabularNums), color = Ink.Muted)
             }
-            TextButton(onClick = { editing = true }) { Text("Modifier") }
+            GhostButton("Modifier") { editing = true }
             IconButton(onClick = { store.setApiKey(p, null) }) {
-                Icon(Icons.Rounded.Delete, contentDescription = "Supprimer la clé")
+                Icon(Icons.Rounded.Delete, contentDescription = "Supprimer la clé", tint = Ink.Muted)
             }
         }
     } else {
@@ -283,34 +287,40 @@ private fun ApiKeyEditor(p: Provider, hasKey: Boolean) {
             label = { Text("Clé API ${p.label}") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
+            shape = FieldShape,
+            colors = inkFieldColors(),
             visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             trailingIcon = {
                 IconButton(onClick = { visible = !visible }) {
-                    Icon(if (visible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, contentDescription = "Afficher")
+                    Icon(
+                        if (visible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                        contentDescription = "Afficher",
+                        tint = Ink.Muted,
+                    )
                 }
             },
         )
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Button(
-                onClick = {
-                    store.setApiKey(p, input)
-                    input = ""
-                    editing = false
-                },
-                enabled = input.isNotBlank(),
-            ) { Text("Enregistrer") }
-            if (hasKey) {
-                TextButton(onClick = { editing = false; input = "" }) { Text("Annuler") }
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PillButton("Enregistrer", enabled = input.isNotBlank()) {
+                store.setApiKey(p, input)
+                input = ""
+                editing = false
             }
+            if (hasKey) GhostButton("Annuler") { editing = false; input = "" }
             Spacer(Modifier.weight(1f))
             if (p.keyUrl.isNotEmpty()) {
-                TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(p.keyUrl))) }) {
-                    Text("Obtenir une clé")
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(p.keyUrl))) }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Obtenir une clé", style = MaterialTheme.typography.labelLarge, color = Ink.RedSoft)
                     Spacer(Modifier.width(4.dp))
-                    Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, tint = Ink.RedSoft, modifier = Modifier.size(15.dp))
                 }
             }
         }
