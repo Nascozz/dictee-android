@@ -322,6 +322,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         transcribeJob = scope.launch {
             try {
                 val text = Transcriber.transcribe(file, request)
+                Graph.usage.record(request.model, duration)
                 if (text.isBlank()) {
                     fail("Je n'ai rien entendu", "Rien entendu")
                 } else {
@@ -402,6 +403,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             main.removeCallbacks(autoStop)
             main.removeCallbacks(writeField)
             val text = finalText.ifBlank { liveText.toString() }.trim()
+            Graph.usage.record(MistralRealtime.MODEL, liveDurationMs)
             val field = liveField
             liveField = null
             if (text.isEmpty()) {
@@ -434,29 +436,87 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     }
 
     /**
-     * Décide si on peut écrire en direct dans le champ : il faut connaître son contenu exact
-     * (pas de texte d'aide ambigu). Sinon, le texte s'affichera dans l'île.
+     * Décide si on peut écrire en direct dans le champ : il faut connaître son contenu exact.
+     * Sinon, le texte s'affichera dans l'île.
      */
     private fun prepareLiveField(): LiveField? {
         val node = target?.takeIf { runCatching { it.refresh() }.getOrDefault(false) } ?: findFocusedEditable() ?: return null
+        val f = readField(node) ?: return null
+        var prefix = f.text.substring(0, f.start)
+        val before = prefix.lastOrNull()
+        if (Graph.settings.current.autoSpace && before != null && !before.isWhitespace() && before !in "([{\"'«/") prefix += " "
+        return LiveField(node, f.text, prefix, f.text.substring(f.end))
+    }
+
+    /** Contenu réel d'un champ et position du curseur. */
+    private data class FieldState(val text: String, val start: Int, val end: Int)
+
+    /**
+     * Lit le contenu réel du champ, ou null si on ne peut pas en être sûr.
+     *
+     * Beaucoup d'applis (WhatsApp, Messages…) renvoient le texte grisé d'aide (« Message »)
+     * comme si c'était le contenu, avec le curseur au début. Dans ce cas ambigu, on fait un test
+     * sans risque : on demande de placer le curseur à la fin de ce texte (voir [probeRealText]).
+     */
+    private fun readField(node: AccessibilityNodeInfo): FieldState? {
         val rawText = node.text?.toString().orEmpty()
         val hint = node.hintText?.toString()
         val showingHint = node.isShowingHintText || (hint != null && rawText == hint)
-        val existing = if (showingHint) "" else rawText
+        var existing = if (showingHint) "" else rawText
         var start = node.textSelectionStart
         var end = node.textSelectionEnd
-        if (!showingHint && existing.isNotEmpty() && start <= 0 && end <= 0) return null
+
+        if (existing.isNotEmpty() && start <= 0 && end <= 0) {
+            when (probeRealText(node, existing)) {
+                true -> if (start == 0) {
+                    // Vrai texte, curseur au début : on remet le curseur où il était.
+                    setSelection(node, 0)
+                    end = 0
+                }
+                false -> {
+                    existing = ""
+                    start = 0
+                    end = 0
+                }
+                null -> return null
+            }
+        }
         if (start < 0 || end < 0 || start > existing.length) {
             start = existing.length
             end = existing.length
         }
         if (start > end) start = end.also { end = start }
         end = end.coerceAtMost(existing.length)
-        var prefix = existing.substring(0, start)
-        val before = prefix.lastOrNull()
-        if (Graph.settings.current.autoSpace && before != null && !before.isWhitespace() && before !in "([{\"'«/") prefix += " "
-        return LiveField(node, existing, prefix, existing.substring(end))
+        return FieldState(existing, start, end)
     }
+
+    /**
+     * true = le texte est bien réel ; false = c'est un texte d'aide (champ vide) ; null = impossible à dire.
+     *
+     * On place le curseur à la fin du texte annoncé. Un vrai texte l'accepte. Un champ Android natif
+     * réellement vide le refuse, puisque cette position n'existe pas. On ne conclut « vide » que pour un
+     * champ natif avec un texte court sur une ligne, comme un texte d'aide : jamais pour un long texte.
+     */
+    private fun probeRealText(node: AccessibilityNodeInfo, shown: String): Boolean? {
+        val canSelect = node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SET_SELECTION }
+        if (!canSelect) return null
+        val len = shown.length
+        if (setSelection(node, len)) {
+            runCatching { node.refresh() }
+            return if (node.textSelectionStart == len) true else null
+        }
+        val nativeField = node.className?.toString() == "android.widget.EditText"
+        val placeholderLike = len <= 40 && '\n' !in shown
+        return if (nativeField && placeholderLike) false else null
+    }
+
+    private fun setSelection(node: AccessibilityNodeInfo, cursor: Int): Boolean = node.performAction(
+        AccessibilityNodeInfo.ACTION_SET_SELECTION,
+        Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor)
+        },
+    )
 
     private fun scheduleFieldWrite() {
         if (fieldWritePending) return
@@ -483,15 +543,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             AccessibilityNodeInfo.ACTION_SET_TEXT,
             Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) },
         )
-        if (ok) {
-            node.performAction(
-                AccessibilityNodeInfo.ACTION_SET_SELECTION,
-                Bundle().apply {
-                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor)
-                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor)
-                },
-            )
-        }
+        if (ok) setSelection(node, cursor)
         return ok
     }
 
@@ -511,57 +563,23 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
     /**
      * Insère le texte au curseur. Renvoie false si on a dû se contenter du presse-papiers.
-     *
-     * Beaucoup d'applis (Messages, WhatsApp, champs Compose…) renvoient le texte grisé d'aide
-     * (« Message ») comme si c'était le contenu du champ. On ne réécrit donc tout le champ que
-     * quand on est sûr de son contenu ; dans le doute, on colle au curseur, ce qui est toujours juste.
+     * Quand le contenu du champ est incertain (voir [readField]), on colle au curseur, ce qui est toujours juste.
      */
     private fun insertText(raw: String): Boolean {
         val text = raw.trim()
         val node = target?.takeIf { runCatching { it.refresh() }.getOrDefault(false) } ?: findFocusedEditable()
             ?: return copyToClipboard(text)
-
-        val rawText = node.text?.toString().orEmpty()
-        val hint = node.hintText?.toString()
-        val showingHint = node.isShowingHintText || (hint != null && rawText == hint)
-        val existing = if (showingHint) "" else rawText
-        var start = node.textSelectionStart
-        var end = node.textSelectionEnd
-
-        // Contenu incertain : texte présent mais curseur absent ou tout au début (souvent un placeholder).
-        val uncertain = !showingHint && existing.isNotEmpty() && (start <= 0 && end <= 0)
-        if (uncertain) return paste(node, text)
-
-        if (start < 0 || end < 0 || start > existing.length) {
-            start = existing.length
-            end = existing.length
-        }
-        if (start > end) start = end.also { end = start }
-        end = end.coerceAtMost(existing.length)
+        val f = readField(node) ?: return paste(node, text)
 
         var insert = text
         if (Graph.settings.current.autoSpace) {
-            val before = existing.getOrNull(start - 1)
+            val before = f.text.getOrNull(f.start - 1)
             if (before != null && !before.isWhitespace() && before !in "([{\"'«/") insert = " $insert"
-            val after = existing.getOrNull(end)
+            val after = f.text.getOrNull(f.end)
             if (after != null && !after.isWhitespace() && after !in ".,;:!?)]}»") insert = "$insert "
         }
-
-        val newText = existing.substring(0, start) + insert + existing.substring(end)
-        val args = Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText)
-        }
-        if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
-            val cursor = start + insert.length
-            node.performAction(
-                AccessibilityNodeInfo.ACTION_SET_SELECTION,
-                Bundle().apply {
-                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor)
-                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor)
-                },
-            )
-            return true
-        }
+        val newText = f.text.substring(0, f.start) + insert + f.text.substring(f.end)
+        if (setFieldText(node, newText, f.start + insert.length)) return true
         return paste(node, insert)
     }
 

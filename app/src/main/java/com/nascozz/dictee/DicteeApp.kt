@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.content.Context
 import com.nascozz.dictee.data.HistoryStore
 import com.nascozz.dictee.data.SettingsStore
+import com.nascozz.dictee.data.UsageStore
 import com.nascozz.dictee.update.UpdateWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,11 +31,14 @@ object Graph {
         private set
     lateinit var history: HistoryStore
         private set
+    lateinit var usage: UsageStore
+        private set
 
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     fun init(context: Context) {
         settings = SettingsStore(context)
         history = HistoryStore(context)
+        usage = UsageStore(context)
     }
 }

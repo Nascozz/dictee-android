@@ -50,7 +50,7 @@ private fun AppRoot() {
     val tabs = listOf(
         "Accueil" to Icons.Rounded.Mic,
         "Réglages" to Icons.Rounded.Tune,
-        "Historique" to Icons.Rounded.History,
+        "Activité" to Icons.Rounded.History,
     )
     Scaffold(
         containerColor = Ink.Bg,
