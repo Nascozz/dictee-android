@@ -72,6 +72,8 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private var liveField: LiveField? = null
     private var liveDurationMs = 0L
     private var fieldWritePending = false
+    /** Au moins une écriture directe a réussi : le texte est déjà dans le champ, ne jamais recoller. */
+    private var liveWritten = false
 
     /** Champ qu'on peut réécrire en direct : on garde ce qu'il y avait avant et après le curseur. */
     private class LiveField(
@@ -356,6 +358,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
     private fun startLive() {
         liveText.setLength(0)
+        liveWritten = false
         liveField = prepareLiveField()
         val session = MistralRealtime(Graph.settings.apiKey(com.nascozz.dictee.stt.Provider.MISTRAL).orEmpty(), liveListener)
         val pcm = PcmStreamer { session.sendAudio(it) }
@@ -423,11 +426,11 @@ class DictationService : AccessibilityService(), IslandView.Listener {
                 val after = field.suffix.firstOrNull()
                 if (after != null && !after.isWhitespace() && after !in ".,;:!?)]}»") finalInField = "$finalInField "
             }
-            val inserted = if (field != null) {
-                setFieldText(field.node, field.prefix + finalInField + field.suffix, field.prefix.length + finalInField.length) ||
-                    insertText(text)
-            } else {
-                insertText(text)
+            val inserted = when {
+                field != null && writeFinal(field, finalInField) -> true
+                // La version finale n'a pas pu remplacer le direct, mais le texte est déjà là : on ne recolle pas.
+                field != null && liveWritten -> true
+                else -> insertText(text)
             }
             Graph.history.add(text, "Mistral · temps réel", MistralRealtime.MODEL, liveDurationMs)
             if (inserted) succeed("Inséré") else {
@@ -552,7 +555,9 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         fieldWritePending = false
         val field = liveField ?: return@Runnable
         val text = liveText.toString().trimStart()
-        if (!setFieldText(field.node, field.prefix + text + field.suffix, field.prefix.length + text.length)) {
+        if (setFieldText(field.node, field.prefix + text + field.suffix, field.prefix.length + text.length)) {
+            liveWritten = true
+        } else if (!liveWritten) {
             // L'appli refuse l'écriture directe : on bascule sur les sous-titres dans l'île.
             liveField = null
             if (mode == Mode.RECORDING) {
@@ -560,6 +565,15 @@ class DictationService : AccessibilityService(), IslandView.Listener {
                 island.setState(IslandView.State.LIVE)
             }
         }
+    }
+
+    /** Remplace le texte direct par la version finale ; une seconde tentative avec un nœud rafraîchi. */
+    private fun writeFinal(field: LiveField, finalText: String): Boolean {
+        val full = field.prefix + finalText + field.suffix
+        val cursor = field.prefix.length + finalText.length
+        if (setFieldText(field.node, full, cursor)) return true
+        val fresh = runCatching { field.node.refresh() }.getOrDefault(false)
+        return fresh && setFieldText(field.node, full, cursor)
     }
 
     private fun setFieldText(node: AccessibilityNodeInfo, text: String, cursor: Int): Boolean {
