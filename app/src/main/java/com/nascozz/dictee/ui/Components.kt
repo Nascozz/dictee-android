@@ -51,6 +51,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import com.nascozz.dictee.BuildConfig
+import com.nascozz.dictee.update.WhatsNew
 import kotlin.math.abs
 import kotlin.math.sin
 
@@ -245,3 +248,38 @@ fun IslandDemo(modifier: Modifier = Modifier) {
 
 /** Halo rouge très doux derrière la vitrine. */
 val RedGlow = Brush.radialGradient(listOf(Ink.Red.copy(alpha = 0.22f), Color.Transparent))
+
+/** Petit récap des nouveautés, au premier lancement d'une nouvelle version. */
+@Composable
+fun WhatsNewDialog(notes: WhatsNew.Notes, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(CardShape)
+                .background(Ink.Surface)
+                .border(1.dp, Ink.Line, CardShape)
+                .padding(24.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                StatusDot(Ink.Red, pulse = true)
+                Spacer(Modifier.width(10.dp))
+                Eyebrow("Nouveautés · version ${BuildConfig.VERSION_NAME}", color = Ink.RedSoft)
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(notes.title, style = MaterialTheme.typography.titleLarge)
+            if (notes.points.isNotEmpty()) {
+                Spacer(Modifier.height(14.dp))
+                notes.points.take(6).forEach { point ->
+                    Row(Modifier.padding(vertical = 5.dp)) {
+                        Box(Modifier.padding(top = 7.dp)) { StatusDot(Ink.Red.copy(alpha = 0.7f), size = 6.dp) }
+                        Spacer(Modifier.width(12.dp))
+                        Text(point, style = MaterialTheme.typography.bodyMedium, color = Ink.Muted)
+                    }
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+            PillButton("C'est noté", Modifier.fillMaxWidth(), onClick = onDismiss)
+        }
+    }
+}

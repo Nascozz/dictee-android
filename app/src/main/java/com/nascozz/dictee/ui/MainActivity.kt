@@ -24,14 +24,19 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.nascozz.dictee.update.Relauncher
 import com.nascozz.dictee.update.Updater
+import com.nascozz.dictee.update.WhatsNew
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,6 +59,15 @@ private fun AppRoot() {
         "Réglages" to Icons.Rounded.Tune,
         "Activité" to Icons.Rounded.History,
     )
+    val ctx = LocalContext.current
+    var notes by remember { mutableStateOf<WhatsNew.Notes?>(null) }
+    LaunchedEffect(Unit) { notes = WhatsNew.pending(ctx) }
+    notes?.let {
+        WhatsNewDialog(it) {
+            WhatsNew.markSeen(ctx)
+            notes = null
+        }
+    }
     Scaffold(
         containerColor = Ink.Bg,
         bottomBar = {

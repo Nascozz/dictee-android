@@ -23,6 +23,7 @@ class UpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             if (release.versionCode <= BuildConfig.VERSION_CODE) return Result.success()
             // Ne jamais couper une dictée en cours : on réessaiera plus tard.
             if (DictationService.busy) return Result.retry()
+            WhatsNew.remember(applicationContext, release.versionCode, release.notes)
             Updater.downloadAndInstall(applicationContext, release)
             Result.success()
         } catch (e: Exception) {

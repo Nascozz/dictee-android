@@ -66,6 +66,7 @@ object Updater {
         val app = context.applicationContext
         // Lancée depuis l'écran : on rouvrira Dictée après l'installation.
         Relauncher.request(app)
+        WhatsNew.remember(app, release.versionCode, release.notes)
         job = Graph.appScope.launch {
             try {
                 downloadAndInstall(app, release)

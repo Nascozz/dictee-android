@@ -77,6 +77,8 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private var fieldWritePending = false
     /** Au moins une écriture directe a réussi : le texte est déjà dans le champ, ne jamais recoller. */
     private var liveWritten = false
+    /** Dernier contenu écrit dans le champ, pour ne pas le réécrire pour rien. */
+    private var lastFieldWrite: String? = null
     private var lastDeltaAt = 0L
 
     // Copie locale de l'audio temps réel, pour pouvoir réessayer si la transcription échoue.
@@ -374,6 +376,9 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private fun startLive() {
         liveText.setLength(0)
         liveWritten = false
+        lastFieldWrite = null
+        fieldWritePending = false
+        main.removeCallbacks(writeField)
         liveField = prepareLiveField()
         val session = MistralRealtime(Graph.settings.apiKey(com.nascozz.dictee.stt.Provider.MISTRAL).orEmpty(), liveListener)
         openPcm()
@@ -439,8 +444,11 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             main.removeCallbacks(levelTick)
             main.removeCallbacks(autoStop)
             main.removeCallbacks(writeField)
-            // Le texte final de Mistral ne connaît pas nos pauses : on garde le direct s'il en contient.
-            val raw = if (TextFormatter.PAUSE in liveText) liveText.toString() else finalText.ifBlank { liveText.toString() }
+            fieldWritePending = false
+            // Déjà écrit en direct dans le champ : on garde exactement ce texte, on n'y retouche que pour
+            // ajouter les derniers mots. Sinon, la version finale de Mistral (sans nos pauses).
+            val raw = if (liveWritten || TextFormatter.PAUSE in liveText) liveText.toString()
+            else finalText.ifBlank { liveText.toString() }
             val text = TextFormatter.format(raw, Graph.settings.current.formatOptions).trim()
             Graph.usage.record(MistralRealtime.MODEL, liveDurationMs)
             closePcm()?.delete()
@@ -457,13 +465,15 @@ class DictationService : AccessibilityService(), IslandView.Listener {
                 if (after != null && !after.isWhitespace() && after !in ".,;:!?)]}»") finalInField = "$finalInField "
             }
             val inserted = when {
+                // Rien de nouveau depuis la dernière écriture directe : on s'arrête là, sans rien recoller.
+                field != null && liveWritten && field.prefix + finalInField + field.suffix == lastFieldWrite -> true
                 field != null && writeFinal(field, finalInField) -> true
                 // La version finale n'a pas pu remplacer le direct, mais le texte est déjà là : on ne recolle pas.
                 field != null && liveWritten -> true
                 else -> insertText(text)
             }
             Graph.history.add(text, "Mistral · temps réel", MistralRealtime.MODEL, liveDurationMs)
-            if (inserted) succeed("Inséré") else {
+            if (inserted) succeed(if (liveWritten) "Terminé" else "Inséré") else {
                 toast("Texte copié : colle-le où tu veux")
                 succeed("Copié")
             }
@@ -613,8 +623,11 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         fieldWritePending = false
         val field = liveField ?: return@Runnable
         val text = liveFormatted().trimStart()
-        if (setFieldText(field.node, field.prefix + text + field.suffix, field.prefix.length + text.length)) {
+        val full = field.prefix + text + field.suffix
+        if (full == lastFieldWrite) return@Runnable
+        if (setFieldText(field.node, full, field.prefix.length + text.length)) {
             liveWritten = true
+            lastFieldWrite = full
         } else if (!liveWritten) {
             // L'appli refuse l'écriture directe : on bascule sur les sous-titres dans l'île.
             liveField = null
