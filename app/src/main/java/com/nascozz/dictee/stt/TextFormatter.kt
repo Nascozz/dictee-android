@@ -20,12 +20,15 @@ object TextFormatter {
         val french: Boolean,
     )
 
-    fun format(raw: String, o: Options): String {
+    /** Ne plante jamais : en cas de souci, on rend le texte brut (sans marqueurs). */
+    fun format(raw: String, o: Options): String = try {
         var t = raw
         if (o.minimal) t = minimal(t)
         t = pauses(t, addPeriod = !o.minimal)
         if (o.voiceCommands) t = commands(t, o.french)
-        return tidy(t)
+        tidy(t)
+    } catch (e: Throwable) {
+        raw.replace(PAUSE, '\n').replace(CAP.toString(), "")
     }
 
     // --- Niveau minimal : style SMS ----------------------------------------------------------
@@ -62,7 +65,13 @@ object TextFormatter {
 
     private enum class Kind { INLINE, END, BREAK }
 
-    private data class Command(val pattern: String, val symbol: String, val kind: Kind)
+    /** [notAfter] : mots qui, juste avant, montrent que ce n'est pas une commande (« au point »). */
+    private data class Command(
+        val pattern: String,
+        val symbol: String,
+        val kind: Kind,
+        val notAfter: Set<String> = emptySet(),
+    )
 
     private const val APOS = "['’]"
 
@@ -82,24 +91,36 @@ object TextFormatter {
         // « point » seul : pas quand c'est un nom (« mon point », « au point », « point de vue »,
         // « point fort »…). Sinon c'est de la ponctuation dictée.
         Command(
-            "(?<!\\b(?:le|la|un|une|ce|cet|au|aux|à|du|mon|ton|son|notre|votre|leur|chaque|quel|premier|dernier|" +
-                "gros|petit|bon|seul|même|en|sur|ce) )point(?![ \\t]+(?:de|d['’]|du|des|fort|faible|commun|mort|" +
-                "noir|culminant|chaud|clé|clef|central|précis|sensible)\\b)",
+            "point(?![ \\t]+(?:de|d['’]|du|des|fort|faible|commun|mort|noir|culminant|chaud|clé|clef|central|" +
+                "précis|sensible)$WORD_END)",
             ".", Kind.END,
+            notAfter = setOf(
+                "le", "la", "un", "une", "ce", "cet", "au", "aux", "à", "du", "mon", "ton", "son", "notre", "votre",
+                "leur", "chaque", "quel", "premier", "dernier", "gros", "petit", "bon", "seul", "même", "en", "sur",
+            ),
         ),
     )
 
-    private val compiled = COMMANDS.map { c ->
+    // Pas de \\b ni de (?U) : le moteur d'Android (ICU) refuse (?U), et sans lui le \\b de Java
+    // ignore les accents. Ces bornes explicites marchent pareil sur les deux.
+    private const val WORD_START = "(?<![\\p{L}\\p{N}])"
+    private const val WORD_END = "(?![\\p{L}\\p{N}])"
+
+    private val compiled by lazy {
+        COMMANDS.map { c ->
         // Avale la ponctuation que le modèle a pu mettre autour du mot (« Bonjour, virgule, … »),
         // mais jamais un retour à la ligne.
-        Regex("(?iU)[ \\t,.;:]*\\b${c.pattern}\\b[ \\t,.;:]*") to c
+            Regex("(?i)[ \\t,.;:]*$WORD_START${c.pattern}$WORD_END[ \\t,.;:]*") to c
+        }
     }
 
     private fun commands(t: String, french: Boolean): String {
         var s = t
         for ((regex, c) in compiled) {
-            s = regex.replace(s) { m ->
-                val atEnd = m.range.last == s.length - 1
+            val src = s
+            s = regex.replace(src) { m ->
+                if (c.notAfter.isNotEmpty() && previousWord(src, m.range.first) in c.notAfter) return@replace m.value
+                val atEnd = m.range.last == src.length - 1
                 val tail = if (atEnd) "" else " "
                 when (c.kind) {
                     Kind.BREAK -> c.symbol + CAP
@@ -109,6 +130,14 @@ object TextFormatter {
             }
         }
         return s
+    }
+
+    private fun previousWord(s: String, before: Int): String {
+        var end = before
+        while (end > 0 && !s[end - 1].isLetterOrDigit()) end--
+        var start = end
+        while (start > 0 && s[start - 1].isLetterOrDigit()) start--
+        return s.substring(start, end).lowercase()
     }
 
     // --- Nettoyage final ---------------------------------------------------------------------
