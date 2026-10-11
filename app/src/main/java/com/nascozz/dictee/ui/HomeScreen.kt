@@ -13,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,6 +29,8 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -49,6 +52,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,6 +70,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nascozz.dictee.Graph
 import com.nascozz.dictee.service.DictationService
 import com.nascozz.dictee.update.Updater
+import kotlinx.coroutines.launch
 
 private data class SetupStatus(
     val mic: Boolean,
@@ -84,9 +89,12 @@ private data class SetupStatus(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HomeScreen(onOpenSettings: () -> Unit) {
+fun HomeScreen() {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val engineRequester = remember { BringIntoViewRequester() }
     val settings by Graph.settings.state.collectAsStateWithLifecycle()
     var status by remember { mutableStateOf(SetupStatus.read(ctx)) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { status = SetupStatus.read(ctx) }
@@ -123,6 +131,7 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
 
         Showcase(ready, modeLabel)
         UpdateBanner()
+        EngineCard(Modifier.bringIntoViewRequester(engineRequester))
 
         SectionCard {
             SetupHeader(allDone, "${steps.count { it }}/${steps.size}", setupOpen) { setupOpen = !setupOpen }
@@ -137,7 +146,7 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
                         if (hasKey) "Chiffrée sur ce téléphone" else "Pour transcrire ta voix",
                         hasKey,
                         "Ajouter",
-                        onAction = onOpenSettings,
+                        onAction = { scope.launch { engineRequester.bringIntoView() } },
                     )
                     SetupStep(
                         Icons.Rounded.Accessibility,

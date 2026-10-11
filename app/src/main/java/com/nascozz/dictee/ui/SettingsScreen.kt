@@ -3,9 +3,7 @@ package com.nascozz.dictee.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,21 +17,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
-import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.Visibility
-import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -44,21 +31,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nascozz.dictee.BuildConfig
 import com.nascozz.dictee.Graph
-import com.nascozz.dictee.stt.Provider
+import com.nascozz.dictee.stt.TextFormatter
 import com.nascozz.dictee.update.Updater
+import java.util.Locale
 import kotlin.math.roundToInt
 
 private val LANGUAGES = listOf(
@@ -72,15 +57,17 @@ private val LANGUAGES = listOf(
     "ar" to "العربية",
 )
 
-private val FieldShape = RoundedCornerShape(18.dp)
+/** Ce que renvoie le modèle + des commandes dictées : l'exemple de l'aperçu. */
+private const val PREVIEW_RAW = "Salut, ça va ? On se voit demain vers 20h. Ramène à boire virgule merci point à la ligne bisous"
 
-@OptIn(ExperimentalLayoutApi::class)
+/**
+ * Une seule page, sans sous-menus : chaque réglage est visible et se change sur place.
+ * Le fournisseur, le modèle et la clé sont sur l'accueil (carte « Moteur »).
+ */
 @Composable
 fun SettingsScreen() {
-    val ctx = LocalContext.current
     val store = Graph.settings
     val s by store.state.collectAsStateWithLifecycle()
-    val provider = s.provider
 
     Column(
         Modifier
@@ -91,353 +78,223 @@ fun SettingsScreen() {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         ScreenTitle("Réglages")
+        Text(
+            "Fournisseur, modèle et clé API sont sur l'accueil.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Ink.Faint,
+        )
 
-        SectionCard(title = "Fournisseur") {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Provider.entries.forEach { p ->
-                    ProviderRow(p, selected = p == provider, hasKey = s.hasKey(p)) { store.setProvider(p) }
-                }
-            }
-        }
+        // --- Texte -------------------------------------------------------------------------
+        SectionCard(title = "Texte") {
+            Preview(TextFormatter.format(PREVIEW_RAW, s.formatOptions).trim())
+            Spacer(Modifier.height(16.dp))
 
-        SectionCard(title = provider.label) {
-            ApiKeyEditor(provider, s.hasKey(provider))
+            Label("Ponctuation")
+            Segmented(listOf(false to "Normale", true to "Minimale"), s.minimalPunctuation, store::setMinimalPunctuation)
+            Spacer(Modifier.height(14.dp))
 
-            if (provider == Provider.CUSTOM) {
-                Spacer(Modifier.height(16.dp))
-                var url by remember { mutableStateOf(s.customBaseUrl) }
-                OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it; store.setCustomBaseUrl(it) },
-                    label = { Text("URL de base") },
-                    placeholder = { Text("https://api.exemple.com/v1") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = FieldShape,
-                    colors = inkFieldColors(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                )
-            }
+            Label("Les points deviennent")
+            Segmented(listOf(0 to "Des points", 1 to "À la ligne", 2 to "Ligne vide"), s.periodBreaks, store::setPeriodBreaks)
+            Spacer(Modifier.height(8.dp))
 
-            if (provider == Provider.MISTRAL) {
-                Spacer(Modifier.height(14.dp))
-                Hairline()
-                Spacer(Modifier.height(6.dp))
-                SettingSwitch(
-                    "Temps réel",
-                    "Le texte s'écrit pendant que tu parles · Voxtral Realtime",
-                    s.realtime,
-                    store::setRealtime,
-                )
-            }
-
-            Spacer(Modifier.height(18.dp))
             Hairline()
-            Spacer(Modifier.height(18.dp))
-            Eyebrow(if (s.useRealtime) "Modèle hors temps réel" else "Modèle", Modifier.padding(bottom = 10.dp))
-            var model by remember(provider) { mutableStateOf(s.modelFor(provider)) }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                provider.models.forEach { m ->
-                    FilterChip(
-                        selected = model == m,
-                        onClick = { model = m; store.setModel(provider, m) },
-                        label = { Text(m) },
-                        shape = RoundedCornerShape(50),
-                        colors = inkChipColors(),
-                        border = inkChipBorder(model == m),
-                    )
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            OutlinedTextField(
-                value = model,
-                onValueChange = { model = it; store.setModel(provider, it) },
-                label = { Text("Ou un autre modèle") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                shape = FieldShape,
-                colors = inkFieldColors(),
-            )
-        }
-
-        SectionCard(title = "Langue") {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                LANGUAGES.forEach { (code, label) ->
-                    FilterChip(
-                        selected = s.language == code,
-                        onClick = { store.setLanguage(code) },
-                        label = { Text(label) },
-                        shape = RoundedCornerShape(50),
-                        colors = inkChipColors(),
-                        border = inkChipBorder(s.language == code),
-                    )
-                }
-            }
-            Text(
-                "Choisir ta langue améliore la précision.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Ink.Faint,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-        }
-
-        SectionCard(title = "Ponctuation") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(false to "Normale", true to "Minimale").forEach { (min, label) ->
-                    FilterChip(
-                        selected = s.minimalPunctuation == min,
-                        onClick = { store.setMinimalPunctuation(min) },
-                        label = { Text(label) },
-                        shape = RoundedCornerShape(50),
-                        colors = inkChipColors(),
-                        border = inkChipBorder(s.minimalPunctuation == min),
-                    )
-                }
-            }
-            Text(
-                if (s.minimalPunctuation) "Style SMS : sans virgules ni point final. Les questions et ce que tu dictes restent."
-                else "La ponctuation du modèle, telle quelle.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Ink.Faint,
-                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
-            )
-            Hairline()
-            Text("Points", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 10.dp))
-            Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(0 to "Garder", 1 to "À la ligne", 2 to "Double ligne").forEach { (v, label) ->
-                    FilterChip(
-                        selected = s.periodBreaks == v,
-                        onClick = { store.setPeriodBreaks(v) },
-                        label = { Text(label) },
-                        shape = RoundedCornerShape(50),
-                        colors = inkChipColors(),
-                        border = inkChipBorder(s.periodBreaks == v),
-                    )
-                }
-            }
-            Text(
-                when (s.periodBreaks) {
-                    1 -> "Chaque point devient un retour à la ligne."
-                    2 -> "Chaque point devient une ligne vide entre les phrases."
-                    else -> "Les points restent des points."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = Ink.Faint,
-                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
-            )
+            SettingSwitch("Commandes vocales", "Dis « virgule », « point », « à la ligne »…", s.voiceCommands, store::setVoiceCommands)
+            AnimatedVisibility(s.voiceCommands) { CommandList() }
             Hairline()
             SettingSwitch(
-                "Commandes vocales",
-                "Dis « virgule », « point », « point d'interrogation », « à la ligne », « nouveau paragraphe »…",
-                s.voiceCommands,
-                store::setVoiceCommands,
-            )
-            Hairline()
-            SettingSwitch(
-                "À la ligne après une pause",
-                "En temps réel, un silence termine la phrase et passe à la ligne",
+                "À la ligne après un silence",
+                "En temps réel, une pause termine la phrase",
                 s.pauseBreak,
                 store::setPauseBreak,
             )
-            AnimatedVisibility(s.pauseBreak) {
-                Column(Modifier.padding(top = 4.dp)) {
-                    var pause by remember { mutableFloatStateOf(s.pauseSeconds) }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Silence de", style = MaterialTheme.typography.bodyMedium, color = Ink.Muted, modifier = Modifier.weight(1f))
-                        Text(
-                            String.format(java.util.Locale.FRANCE, "%.1f s", pause),
-                            style = MaterialTheme.typography.titleSmall.merge(TabularNums),
-                        )
-                    }
-                    Slider(
-                        value = pause,
-                        onValueChange = { pause = (it * 2).roundToInt() / 2f },
-                        onValueChangeFinished = { store.setPauseSeconds(pause) },
-                        valueRange = 1f..5f,
-                        steps = 7,
-                        colors = SliderDefaults.colors(
-                            thumbColor = Ink.Red,
-                            activeTrackColor = Ink.Red,
-                            inactiveTrackColor = Ink.SurfaceHigh,
-                            activeTickColor = Ink.RedSoft,
-                            inactiveTickColor = Ink.LineStrong,
-                        ),
-                    )
-                    Text(
-                        "Court : coupe plus souvent, même quand tu hésites. Long : seulement les vraies pauses.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Ink.Faint,
-                    )
-                }
-            }
-        }
-
-        if (provider.supportsPrompt) {
-            SectionCard(title = "Vocabulaire") {
-                var prompt by remember { mutableStateOf(s.prompt) }
-                OutlinedTextField(
-                    value = prompt,
-                    onValueChange = { prompt = it; store.setPrompt(it) },
-                    placeholder = { Text("Noms propres, jargon… ex : Guillaume, Kotlin, Spokenly") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2,
-                    shape = FieldShape,
-                    colors = inkFieldColors(),
-                )
-            }
-        }
-
-        SectionCard(title = "Île") {
-            SettingSwitch("Afficher l'île", "Quand un champ de texte est actif", s.bubbleEnabled, store::setBubbleEnabled)
-            Hairline()
-            SettingSwitch(
-                "Arrêter à l'envoi",
-                "En temps réel, quand tu envoies le message, l'écoute s'arrête toute seule",
-                s.stopOnSend,
-                store::setStopOnSend,
-            )
-            Hairline()
-            SettingSwitch("Vibrations", "Au début et à la fin de la dictée", s.haptics, store::setHaptics)
+            AnimatedVisibility(s.pauseBreak) { PauseSlider(s.pauseSeconds, store::setPauseSeconds) }
             Hairline()
             SettingSwitch("Espaces automatiques", "Autour du texte dicté si besoin", s.autoSpace, store::setAutoSpace)
         }
 
-        SectionCard(title = "Mises à jour") {
-            SettingSwitch("Automatiques", "Installe les nouvelles versions publiées", s.autoUpdate, store::setAutoUpdate)
-            Hairline()
-            Spacer(Modifier.height(14.dp))
-            val update by Updater.state.collectAsStateWithLifecycle()
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Version ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleSmall.merge(TabularNums))
-                    Text(
-                        when (val u = update) {
-                            Updater.State.Checking -> "Vérification…"
-                            Updater.State.UpToDate -> "À jour"
-                            is Updater.State.Available -> "Version ${u.release.versionName} disponible"
-                            is Updater.State.Downloading -> "Téléchargement ${(u.progress * 100).toInt()} %"
-                            is Updater.State.Installing -> "Installation…"
-                            is Updater.State.Failed -> u.message
-                            Updater.State.Idle -> "github.com/${Updater.REPO}"
-                        },
-                        style = MaterialTheme.typography.bodySmall.merge(TabularNums),
-                        color = Ink.Muted,
-                    )
-                }
-                val available = update as? Updater.State.Available
-                if (available != null) {
-                    PillButton("Installer") { Updater.install(ctx, available.release) }
-                } else {
-                    GhostButton("Vérifier") { Updater.check() }
-                }
+        // --- Langue -------------------------------------------------------------------------
+        SectionCard(title = "Langue") {
+            LanguageChips(s.language, store::setLanguage)
+            if (s.provider.supportsPrompt && !s.useRealtime) {
+                Spacer(Modifier.height(14.dp))
+                var prompt by remember { mutableStateOf(s.prompt) }
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it; store.setPrompt(it) },
+                    label = { Text("Vocabulaire") },
+                    placeholder = { Text("Noms propres, jargon… ex : Guillaume, Kotlin") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    shape = RoundedCornerShape(18.dp),
+                    colors = inkFieldColors(),
+                )
             }
+        }
+
+        // --- Île ----------------------------------------------------------------------------
+        SectionCard(title = "Île") {
+            SettingSwitch("Afficher l'île", "Quand un champ de texte est actif", s.bubbleEnabled, store::setBubbleEnabled)
+            Hairline()
+            SettingSwitch("Arrêter à l'envoi", "Envoyer le message coupe l'écoute", s.stopOnSend, store::setStopOnSend)
+            Hairline()
+            SettingSwitch("Vibrations", "Au début et à la fin de la dictée", s.haptics, store::setHaptics)
+        }
+
+        // --- Mises à jour -------------------------------------------------------------------
+        SectionCard(title = "Mises à jour") {
+            UpdateRow()
+            Hairline()
+            SettingSwitch("Automatiques", "En arrière-plan, sans rien faire", s.autoUpdate, store::setAutoUpdate)
         }
         Spacer(Modifier.height(12.dp))
     }
 }
 
 @Composable
-private fun ProviderRow(p: Provider, selected: Boolean, hasKey: Boolean, onClick: () -> Unit) {
-    val bg by animateColorAsState(if (selected) Ink.SurfaceHigh else Color.Transparent, label = "bg")
-    val border by animateColorAsState(if (selected) Ink.LineStrong else Color.Transparent, label = "border")
-    Row(
+private fun Label(text: String) {
+    Text(text, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(bottom = 8.dp))
+}
+
+/** Le texte d'exemple tel qu'il sera écrit avec les réglages actuels, en bulle de message. */
+@Composable
+private fun Preview(formatted: String) {
+    Text("Aperçu", style = MaterialTheme.typography.labelSmall, color = Ink.Faint, modifier = Modifier.padding(bottom = 6.dp))
+    Box(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(bg)
-            .border(1.dp, border, RoundedCornerShape(18.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp))
+            .background(Ink.SurfaceHigh)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
-        Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
-            if (selected) StatusDot(Ink.Red, size = 10.dp)
-            else Box(Modifier.size(10.dp).clip(CircleShape).border(1.5.dp, Ink.Faint, CircleShape))
+        Text(formatted, style = MaterialTheme.typography.bodyLarge, color = Ink.Text)
+    }
+}
+
+@Composable
+private fun CommandList() {
+    var open by rememberSaveable { mutableStateOf(false) }
+    Column(Modifier.padding(bottom = 8.dp)) {
+        Text(
+            if (open) "Masquer les commandes" else "Voir les commandes",
+            style = MaterialTheme.typography.labelLarge,
+            color = Ink.RedSoft,
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .clickable { open = !open }
+                .padding(vertical = 4.dp),
+        )
+        AnimatedVisibility(open) {
+            Column(
+                Modifier
+                    .padding(top = 8.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Ink.SurfaceHigh)
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                listOf(
+                    "virgule" to ",",
+                    "point" to ".",
+                    "point d'interrogation" to "?",
+                    "point d'exclamation" to "!",
+                    "deux points" to ":",
+                    "point-virgule" to ";",
+                    "points de suspension" to "…",
+                    "à la ligne" to "↵",
+                    "nouveau paragraphe" to "↵↵",
+                ).forEach { (say, sign) ->
+                    Row {
+                        Text("« $say »", style = MaterialTheme.typography.bodyMedium, color = Ink.Muted, modifier = Modifier.weight(1f))
+                        Text(sign, style = MaterialTheme.typography.titleSmall, color = Ink.Text)
+                    }
+                }
+            }
         }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(p.label, style = MaterialTheme.typography.titleSmall, color = if (selected) Ink.Text else Ink.Muted)
-            Text(p.tagline, style = MaterialTheme.typography.bodySmall, color = Ink.Faint)
+    }
+}
+
+@Composable
+private fun PauseSlider(seconds: Float, onChange: (Float) -> Unit) {
+    var pause by remember { mutableFloatStateOf(seconds) }
+    Column(Modifier.padding(bottom = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Silence de", style = MaterialTheme.typography.bodyMedium, color = Ink.Muted, modifier = Modifier.weight(1f))
+            Text(String.format(Locale.FRANCE, "%.1f s", pause), style = MaterialTheme.typography.titleSmall.merge(TabularNums))
         }
-        if (hasKey) {
-            Text(
-                "CLÉ",
-                style = MaterialTheme.typography.labelSmall,
-                color = Ink.Green,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(Ink.Green.copy(alpha = 0.1f))
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
+        Slider(
+            value = pause,
+            onValueChange = { pause = (it * 2).roundToInt() / 2f },
+            onValueChangeFinished = { onChange(pause) },
+            valueRange = 1f..5f,
+            steps = 7,
+            colors = SliderDefaults.colors(
+                thumbColor = Ink.Red,
+                activeTrackColor = Ink.Red,
+                inactiveTrackColor = Ink.SurfaceHigh,
+                activeTickColor = Ink.RedSoft,
+                inactiveTickColor = Ink.LineStrong,
+            ),
+        )
+        Row {
+            Text("Coupe souvent", style = MaterialTheme.typography.labelSmall, color = Ink.Faint, modifier = Modifier.weight(1f))
+            Text("Vraies pauses seulement", style = MaterialTheme.typography.labelSmall, color = Ink.Faint)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LanguageChips(selected: String, onSelect: (String) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LANGUAGES.forEach { (code, label) ->
+            FilterChip(
+                selected = selected == code,
+                onClick = { onSelect(code) },
+                label = { Text(label) },
+                shape = RoundedCornerShape(50),
+                colors = inkChipColors(),
+                border = inkChipBorder(selected == code),
             )
         }
     }
+    Text(
+        "Choisir ta langue améliore la précision.",
+        style = MaterialTheme.typography.bodySmall,
+        color = Ink.Faint,
+        modifier = Modifier.padding(top = 4.dp),
+    )
 }
 
 @Composable
-private fun ApiKeyEditor(p: Provider, hasKey: Boolean) {
+private fun UpdateRow() {
     val ctx = LocalContext.current
-    val store = Graph.settings
-    var editing by remember(p, hasKey) { mutableStateOf(!hasKey) }
-    var input by remember(p) { mutableStateOf("") }
-    var visible by remember { mutableStateOf(false) }
-
-    if (hasKey && !editing) {
-        val hint = remember(p, hasKey) { store.apiKey(p)?.takeLast(4).orEmpty() }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(Ink.Green)
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text("Clé API enregistrée", style = MaterialTheme.typography.titleSmall)
-                Text("•••• $hint", style = MaterialTheme.typography.bodySmall.merge(TabularNums), color = Ink.Muted)
-            }
-            GhostButton("Modifier") { editing = true }
-            IconButton(onClick = { store.setApiKey(p, null) }) {
-                Icon(Icons.Rounded.Delete, contentDescription = "Supprimer la clé", tint = Ink.Muted)
-            }
+    val update by Updater.state.collectAsStateWithLifecycle()
+    Row(Modifier.padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Version ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleSmall.merge(TabularNums))
+            Text(
+                when (val u = update) {
+                    Updater.State.Checking -> "Vérification…"
+                    Updater.State.UpToDate -> "Tu as la dernière version"
+                    is Updater.State.Available -> "Version ${u.release.versionName} disponible"
+                    is Updater.State.Downloading -> "Téléchargement ${(u.progress * 100).toInt()} %"
+                    is Updater.State.Installing -> "Installation…"
+                    is Updater.State.Failed -> u.message
+                    Updater.State.Idle -> "github.com/${Updater.REPO}"
+                },
+                style = MaterialTheme.typography.bodySmall.merge(TabularNums),
+                color = if (update is Updater.State.Available) Ink.RedSoft else Ink.Muted,
+                modifier = Modifier.clickable {
+                    ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${Updater.REPO}/releases")))
+                },
+            )
         }
-    } else {
-        OutlinedTextField(
-            value = input,
-            onValueChange = { input = it },
-            label = { Text("Clé API ${p.label}") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            shape = FieldShape,
-            colors = inkFieldColors(),
-            visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            trailingIcon = {
-                IconButton(onClick = { visible = !visible }) {
-                    Icon(
-                        if (visible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                        contentDescription = "Afficher",
-                        tint = Ink.Muted,
-                    )
-                }
-            },
-        )
-        Spacer(Modifier.height(12.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PillButton("Enregistrer", enabled = input.isNotBlank()) {
-                store.setApiKey(p, input)
-                input = ""
-                editing = false
-            }
-            if (hasKey) GhostButton("Annuler") { editing = false; input = "" }
-            Spacer(Modifier.weight(1f))
-            if (p.keyUrl.isNotEmpty()) {
-                Row(
-                    Modifier
-                        .clip(RoundedCornerShape(50))
-                        .clickable { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(p.keyUrl))) }
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Obtenir une clé", style = MaterialTheme.typography.labelLarge, color = Ink.RedSoft)
-                    Spacer(Modifier.width(4.dp))
-                    Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, tint = Ink.RedSoft, modifier = Modifier.size(15.dp))
-                }
-            }
+        val available = update as? Updater.State.Available
+        if (available != null) {
+            PillButton("Installer") { Updater.install(ctx, available.release) }
+        } else {
+            GhostButton("Vérifier") { Updater.check() }
         }
     }
 }

@@ -105,7 +105,7 @@ private fun AppRoot() {
                 label = "tabs",
             ) { current ->
                 when (current) {
-                    0 -> HomeScreen(onOpenSettings = { tab = 1 })
+                    0 -> HomeScreen()
                     1 -> SettingsScreen()
                     else -> HistoryScreen()
                 }

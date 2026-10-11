@@ -10,6 +10,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -317,6 +318,39 @@ fun WhatsNewDialog(notes: WhatsNew.Notes, onDismiss: () -> Unit) {
                 }
                 Spacer(Modifier.height(20.dp))
                 PillButton("C'est noté", Modifier.fillMaxWidth().height(46.dp), onClick = onDismiss)
+            }
+        }
+    }
+}
+
+/** Sélecteur compact à segments (2 à 3 choix), plus lisible qu'une rangée de pastilles. */
+@Composable
+fun <T> Segmented(options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(50))
+            .background(Ink.Bg)
+            .border(1.dp, Ink.LineStrong, RoundedCornerShape(50))
+            .padding(3.dp),
+    ) {
+        options.forEach { (value, label) ->
+            val on = value == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(50))
+                    .background(if (on) Ink.RedTint else Color.Transparent)
+                    .clickable { onSelect(value) }
+                    .padding(vertical = 9.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (on) Ink.RedSoft else Ink.Muted,
+                    maxLines = 1,
+                )
             }
         }
     }
