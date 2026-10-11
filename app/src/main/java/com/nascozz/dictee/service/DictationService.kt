@@ -217,7 +217,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             island.setState(idleState())
             return
         }
-        Updater.checkIfStale(30 * 60 * 1000L)
+        Updater.checkIfStale(30 * 1000L)
         hole = findHole()
         island.setHole(hole.diameter.toFloat())
         params.height = island.windowHeight

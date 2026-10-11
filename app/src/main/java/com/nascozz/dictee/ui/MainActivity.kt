@@ -51,8 +51,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // À chaque retour dans l'app : y a-t-il une nouvelle version ? (au plus toutes les 2 min)
-        Updater.checkIfStale(2 * 60 * 1000L)
+        // À chaque retour dans l'app : y a-t-il une nouvelle version ? (au plus toutes les 30 s)
+        Updater.checkIfStale(30 * 1000L)
     }
 }
 

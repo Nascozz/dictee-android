@@ -96,23 +96,45 @@ object Updater {
         if (!success) _state.value = State.Failed(message ?: "Mise à jour annulée")
     }
 
+    /** Pour lire la redirection de la page « dernière version » sans la suivre. */
+    private val noRedirect by lazy { client.newBuilder().followRedirects(false).followSslRedirects(false).build() }
+    private var cached: Release? = null
+
+    /**
+     * Dernière version publiée.
+     *
+     * On demande d'abord à la page web github.com/…/releases/latest, qui redirige vers …/tag/v1.0.N :
+     * pas de limite de requêtes, donc on peut vérifier souvent. L'API GitHub (limitée à 60 requêtes/heure
+     * sans compte) n'est appelée qu'une fois par nouvelle version, pour ses notes et son APK.
+     */
     suspend fun fetchLatest(): Release? = withContext(Dispatchers.IO) {
+        val tag = noRedirect.newCall(Request.Builder().url("https://github.com/$REPO/releases/latest").head().build())
+            .execute().use { resp -> resp.header("Location")?.substringAfterLast("/tag/", "")?.ifBlank { null } }
+            ?: return@withContext fetchFromApi()
+        val code = Regex("(\\d+)$").find(tag)?.value?.toIntOrNull() ?: return@withContext null
+        cached?.takeIf { it.versionCode == code }?.let { return@withContext it }
+        fetchFromApi()?.takeIf { it.versionCode == code }
+            // L'API est indisponible : on reconstruit l'adresse de l'APK (nom fixé par le workflow de publication).
+            ?: Release(code, tag.removePrefix("v"), "", "https://github.com/$REPO/releases/download/$tag/Dictee-${tag.removePrefix("v")}.apk")
+                .also { cached = it }
+    }
+
+    private fun fetchFromApi(): Release? = runCatching {
         val req = Request.Builder()
             .url("https://api.github.com/repos/$REPO/releases/latest")
             .header("Accept", "application/vnd.github+json")
             .build()
         client.newCall(req).execute().use { resp ->
-            if (resp.code == 404) return@withContext null
-            if (!resp.isSuccessful) error("GitHub ${resp.code}")
+            if (!resp.isSuccessful) return null
             val json = JSONObject(resp.body!!.string())
             val tag = json.getString("tag_name")
-            val code = Regex("(\\d+)$").find(tag)?.value?.toIntOrNull() ?: return@withContext null
+            val code = Regex("(\\d+)$").find(tag)?.value?.toIntOrNull() ?: return null
             val assets = json.getJSONArray("assets")
             val apk = (0 until assets.length()).map { assets.getJSONObject(it) }
-                .firstOrNull { it.getString("name").endsWith(".apk") } ?: return@withContext null
-            Release(code, tag.removePrefix("v"), json.optString("body"), apk.getString("browser_download_url"))
+                .firstOrNull { it.getString("name").endsWith(".apk") } ?: return null
+            Release(code, tag.removePrefix("v"), json.optString("body"), apk.getString("browser_download_url")).also { cached = it }
         }
-    }
+    }.getOrNull()
 
     suspend fun downloadAndInstall(context: Context, release: Release) {
         _state.value = State.Downloading(release, 0f)
