@@ -2,6 +2,7 @@ package com.nascozz.dictee.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,9 +36,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -55,6 +59,7 @@ import com.nascozz.dictee.BuildConfig
 import com.nascozz.dictee.Graph
 import com.nascozz.dictee.stt.Provider
 import com.nascozz.dictee.update.Updater
+import kotlin.math.roundToInt
 
 private val LANGUAGES = listOf(
     "auto" to "Auto",
@@ -174,6 +179,73 @@ fun SettingsScreen() {
                 color = Ink.Faint,
                 modifier = Modifier.padding(top = 6.dp),
             )
+        }
+
+        SectionCard(title = "Ponctuation") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(false to "Normale", true to "Minimale").forEach { (min, label) ->
+                    FilterChip(
+                        selected = s.minimalPunctuation == min,
+                        onClick = { store.setMinimalPunctuation(min) },
+                        label = { Text(label) },
+                        shape = RoundedCornerShape(50),
+                        colors = inkChipColors(),
+                        border = inkChipBorder(s.minimalPunctuation == min),
+                    )
+                }
+            }
+            Text(
+                if (s.minimalPunctuation) "Style SMS : sans virgules ni point final. Les questions et ce que tu dictes restent."
+                else "La ponctuation du modèle, telle quelle.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Ink.Faint,
+                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+            )
+            Hairline()
+            SettingSwitch(
+                "Commandes vocales",
+                "Dis « virgule », « point », « point d'interrogation », « à la ligne », « nouveau paragraphe »…",
+                s.voiceCommands,
+                store::setVoiceCommands,
+            )
+            Hairline()
+            SettingSwitch(
+                "À la ligne après une pause",
+                "En temps réel, un silence termine la phrase et passe à la ligne",
+                s.pauseBreak,
+                store::setPauseBreak,
+            )
+            AnimatedVisibility(s.pauseBreak) {
+                Column(Modifier.padding(top = 4.dp)) {
+                    var pause by remember { mutableFloatStateOf(s.pauseSeconds) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Silence de", style = MaterialTheme.typography.bodyMedium, color = Ink.Muted, modifier = Modifier.weight(1f))
+                        Text(
+                            String.format(java.util.Locale.FRANCE, "%.1f s", pause),
+                            style = MaterialTheme.typography.titleSmall.merge(TabularNums),
+                        )
+                    }
+                    Slider(
+                        value = pause,
+                        onValueChange = { pause = (it * 2).roundToInt() / 2f },
+                        onValueChangeFinished = { store.setPauseSeconds(pause) },
+                        valueRange = 1f..5f,
+                        steps = 7,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Ink.Red,
+                            activeTrackColor = Ink.Red,
+                            inactiveTrackColor = Ink.SurfaceHigh,
+                            activeTickColor = Ink.RedSoft,
+                            inactiveTickColor = Ink.LineStrong,
+                        ),
+                    )
+                    Text(
+                        "Court : coupe plus souvent, même quand tu hésites. Long : seulement les vraies pauses.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Ink.Faint,
+                    )
+                }
+            }
         }
 
         if (provider.supportsPrompt) {

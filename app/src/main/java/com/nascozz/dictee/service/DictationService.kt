@@ -28,6 +28,7 @@ import com.nascozz.dictee.Graph
 import com.nascozz.dictee.audio.PcmStreamer
 import com.nascozz.dictee.audio.Recorder
 import com.nascozz.dictee.stt.MistralRealtime
+import com.nascozz.dictee.stt.TextFormatter
 import com.nascozz.dictee.stt.SttException
 import com.nascozz.dictee.stt.SttRequest
 import com.nascozz.dictee.stt.Transcriber
@@ -74,6 +75,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private var fieldWritePending = false
     /** Au moins une écriture directe a réussi : le texte est déjà dans le champ, ne jamais recoller. */
     private var liveWritten = false
+    private var lastDeltaAt = 0L
 
     /** Champ qu'on peut réécrire en direct : on garde ce qu'il y avait avant et après le curseur. */
     private class LiveField(
@@ -330,7 +332,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         )
         transcribeJob = scope.launch {
             try {
-                val text = Transcriber.transcribe(file, request)
+                val text = TextFormatter.format(Transcriber.transcribe(file, request), s.formatOptions).trim()
                 Graph.usage.record(request.model, duration)
                 if (text.isBlank()) {
                     fail("Je n'ai rien entendu", "Rien entendu")
@@ -395,12 +397,19 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
     private val liveListener = object : MistralRealtime.Listener {
         override fun onDelta(text: String) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            val s = Graph.settings.current
+            // Longue pause entre deux morceaux de texte : on marque un retour à la ligne.
+            if (s.pauseBreak && liveText.isNotBlank() && now - lastDeltaAt >= (s.pauseSeconds * 1000).toLong()) {
+                liveText.append(TextFormatter.PAUSE)
+            }
+            lastDeltaAt = now
             liveText.append(text)
             if (mode != Mode.RECORDING && mode != Mode.TRANSCRIBING) return
             if (liveField != null) {
                 scheduleFieldWrite()
             } else if (mode == Mode.RECORDING) {
-                island.setCaption(liveText.toString().trim())
+                island.setCaption(liveFormatted().trim())
                 if (island.state == IslandView.State.RECORDING) island.setState(IslandView.State.LIVE)
             }
         }
@@ -412,7 +421,9 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             main.removeCallbacks(levelTick)
             main.removeCallbacks(autoStop)
             main.removeCallbacks(writeField)
-            val text = finalText.ifBlank { liveText.toString() }.trim()
+            // Le texte final de Mistral ne connaît pas nos pauses : on garde le direct s'il en contient.
+            val raw = if (TextFormatter.PAUSE in liveText) liveText.toString() else finalText.ifBlank { liveText.toString() }
+            val text = TextFormatter.format(raw, Graph.settings.current.formatOptions).trim()
             Graph.usage.record(MistralRealtime.MODEL, liveDurationMs)
             val field = liveField
             liveField = null
@@ -554,18 +565,20 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private val writeField = Runnable {
         fieldWritePending = false
         val field = liveField ?: return@Runnable
-        val text = liveText.toString().trimStart()
+        val text = liveFormatted().trimStart()
         if (setFieldText(field.node, field.prefix + text + field.suffix, field.prefix.length + text.length)) {
             liveWritten = true
         } else if (!liveWritten) {
             // L'appli refuse l'écriture directe : on bascule sur les sous-titres dans l'île.
             liveField = null
             if (mode == Mode.RECORDING) {
-                island.setCaption(liveText.toString().trim())
+                island.setCaption(liveFormatted().trim())
                 island.setState(IslandView.State.LIVE)
             }
         }
     }
+
+    private fun liveFormatted() = TextFormatter.format(liveText.toString(), Graph.settings.current.formatOptions)
 
     /** Remplace le texte direct par la version finale ; une seconde tentative avec un nœud rafraîchi. */
     private fun writeFinal(field: LiveField, finalText: String): Boolean {

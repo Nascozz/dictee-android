@@ -3,6 +3,7 @@ package com.nascozz.dictee.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.nascozz.dictee.stt.Provider
+import com.nascozz.dictee.stt.TextFormatter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,6 +20,13 @@ data class AppSettings(
     val autoUpdate: Boolean,
     /** Mistral : le texte s'écrit pendant qu'on parle (Voxtral Realtime). */
     val realtime: Boolean,
+    /** « virgule », « point », « à la ligne »… remplacés par la ponctuation. */
+    val voiceCommands: Boolean,
+    /** Ponctuation minimale (style SMS) plutôt que celle du modèle telle quelle. */
+    val minimalPunctuation: Boolean,
+    /** Temps réel : retour à la ligne après une pause de [pauseSeconds]. */
+    val pauseBreak: Boolean,
+    val pauseSeconds: Float,
     /** Fournisseurs pour lesquels une clé API est enregistrée. */
     val keyed: Set<String>,
 ) {
@@ -26,6 +34,8 @@ data class AppSettings(
     fun modelFor(p: Provider): String = models[p.id]?.takeIf { it.isNotBlank() } ?: p.models.first()
     fun hasKey(p: Provider): Boolean = p.id in keyed
     val useRealtime: Boolean get() = realtime && provider == Provider.MISTRAL
+    val formatOptions: TextFormatter.Options
+        get() = TextFormatter.Options(voiceCommands, minimalPunctuation, french = language == "fr" || language == "auto")
 }
 
 class SettingsStore(context: Context) {
@@ -45,6 +55,10 @@ class SettingsStore(context: Context) {
         autoSpace = prefs.getBoolean("auto_space", true),
         autoUpdate = prefs.getBoolean("auto_update", true),
         realtime = prefs.getBoolean("realtime", true),
+        voiceCommands = prefs.getBoolean("voice_commands", true),
+        minimalPunctuation = prefs.getBoolean("minimal_punctuation", false),
+        pauseBreak = prefs.getBoolean("pause_break", true),
+        pauseSeconds = prefs.getFloat("pause_seconds", 2.5f),
         keyed = Provider.entries.filter { prefs.contains("key_${it.id}") }.map { it.id }.toSet(),
     )
 
@@ -63,6 +77,10 @@ class SettingsStore(context: Context) {
     fun setAutoSpace(v: Boolean) = edit { putBoolean("auto_space", v) }
     fun setAutoUpdate(v: Boolean) = edit { putBoolean("auto_update", v) }
     fun setRealtime(v: Boolean) = edit { putBoolean("realtime", v) }
+    fun setVoiceCommands(v: Boolean) = edit { putBoolean("voice_commands", v) }
+    fun setMinimalPunctuation(v: Boolean) = edit { putBoolean("minimal_punctuation", v) }
+    fun setPauseBreak(v: Boolean) = edit { putBoolean("pause_break", v) }
+    fun setPauseSeconds(v: Float) = edit { putFloat("pause_seconds", v) }
 
     fun setApiKey(p: Provider, key: String?) = edit {
         if (key.isNullOrBlank()) remove("key_${p.id}") else putString("key_${p.id}", SecretBox.encrypt(key.trim()))
