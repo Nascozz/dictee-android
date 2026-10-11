@@ -41,10 +41,12 @@ class IslandView(context: Context) : View(context) {
     interface Listener {
         fun onBubbleTap()
         fun onBubbleLongPress()
+        /** Tap sur la moitié droite quand une mise à jour est proposée. */
+        fun onUpdateTap()
     }
 
     /** LIVE = enregistrement avec sous-titres en direct : l'île s'agrandit vers le bas. */
-    /** UPDATE = « une mise à jour est disponible », proposée après une dictée. */
+    /** UPDATE = repos + mise à jour disponible : micro à gauche, « ↓ Mise à jour » à droite. */
     enum class State { HIDDEN, IDLE, RECORDING, LIVE, TRANSCRIBING, SUCCESS, ERROR, UPDATE }
 
     var listener: Listener? = null
@@ -147,7 +149,7 @@ class IslandView(context: Context) : View(context) {
         State.RECORDING -> hole + 188 * dp
         State.LIVE -> liveWidth()
         State.TRANSCRIBING, State.SUCCESS, State.ERROR -> hole + 128 * dp
-        State.UPDATE -> hole + 160 * dp
+        State.UPDATE -> hole + 224 * dp
     }
 
     /**
@@ -294,8 +296,15 @@ class IslandView(context: Context) : View(context) {
                     drawLabel(canvas, rc, cy, label ?: "Erreur", RED_SOFT, a)
                 }
                 State.UPDATE -> {
-                    drawDownArrow(canvas, lc, cy, a)
-                    drawLabel(canvas, rc, cy, label ?: "Mise à jour", Color.WHITE, a)
+                    drawMic(canvas, lc, cy, a)
+                    // Flèche + libellé, centrés ensemble dans la moitié droite.
+                    val text = label ?: "Mise à jour"
+                    textPaint.textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 12.5f, resources.displayMetrics)
+                    val group = 12 * dp + 7 * dp + textPaint.measureText(text)
+                    val start = rc - group / 2
+                    drawDownArrow(canvas, start + 6 * dp, cy, a)
+                    drawLabel(canvas, start + 19 * dp + textPaint.measureText(text) / 2, cy, text, Color.WHITE, a)
+                    textPaint.textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 13f, resources.displayMetrics)
                 }
                 State.HIDDEN -> Unit
             }
@@ -459,7 +468,9 @@ class IslandView(context: Context) : View(context) {
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(longPress)
                 animate().scaleX(1f).scaleY(1f).setInterpolator(OvershootInterpolator(3f)).setDuration(280).start()
-                if (!longPressFired) performClick()
+                if (!longPressFired) {
+                    if (state == State.UPDATE && e.x > width / 2f) listener?.onUpdateTap() else performClick()
+                }
             }
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)

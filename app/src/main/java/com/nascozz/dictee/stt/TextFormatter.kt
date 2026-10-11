@@ -18,6 +18,8 @@ object TextFormatter {
         val minimal: Boolean,
         /** Typographie française : espace avant « ? ! : ; ». */
         val french: Boolean,
+        /** Chaque point devient : 0 = rien (on garde le point), 1 = un retour à la ligne, 2 = une ligne vide. */
+        val periodBreaks: Int = 0,
     )
 
     /** Ne plante jamais : en cas de souci, on rend le texte brut (sans marqueurs). */
@@ -26,6 +28,7 @@ object TextFormatter {
         if (o.minimal) t = minimal(t)
         t = pauses(t, addPeriod = !o.minimal)
         if (o.voiceCommands) t = commands(t, o.french)
+        if (o.periodBreaks > 0) t = periodsToBreaks(t, o.periodBreaks)
         tidy(t)
     } catch (e: Throwable) {
         raw.replace(PAUSE, '\n').replace(CAP.toString(), "")
@@ -138,6 +141,17 @@ object TextFormatter {
         var start = end
         while (start > 0 && s[start - 1].isLetterOrDigit()) start--
         return s.substring(start, end).lowercase()
+    }
+
+    // --- Points → retours à la ligne ---------------------------------------------------------
+
+    // Un point de fin de phrase : ni « ... », ni « 3.5 ». Avale les espaces et retours à la ligne qui suivent.
+    private val periodRegex by lazy { Regex("(?<![.\\d])\\.(?![.\\d])[ \\t]*(\\n*)") }
+
+    private fun periodsToBreaks(t: String, breaks: Int): String = periodRegex.replace(t) { m ->
+        // On garde les retours à la ligne déjà là s'il y en a plus (pause, « nouveau paragraphe »).
+        val existing = m.groupValues[1].length
+        "\n".repeat(maxOf(breaks, existing)) + CAP
     }
 
     // --- Nettoyage final ---------------------------------------------------------------------

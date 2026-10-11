@@ -202,6 +202,30 @@ fun SettingsScreen() {
                 modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
             )
             Hairline()
+            Text("Points", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 10.dp))
+            Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(0 to "Garder", 1 to "À la ligne", 2 to "Double ligne").forEach { (v, label) ->
+                    FilterChip(
+                        selected = s.periodBreaks == v,
+                        onClick = { store.setPeriodBreaks(v) },
+                        label = { Text(label) },
+                        shape = RoundedCornerShape(50),
+                        colors = inkChipColors(),
+                        border = inkChipBorder(s.periodBreaks == v),
+                    )
+                }
+            }
+            Text(
+                when (s.periodBreaks) {
+                    1 -> "Chaque point devient un retour à la ligne."
+                    2 -> "Chaque point devient une ligne vide entre les phrases."
+                    else -> "Les points restent des points."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = Ink.Faint,
+                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+            )
+            Hairline()
             SettingSwitch(
                 "Commandes vocales",
                 "Dis « virgule », « point », « point d'interrogation », « à la ligne », « nouveau paragraphe »…",

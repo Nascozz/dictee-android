@@ -49,7 +49,7 @@ import kotlinx.coroutines.launch
  */
 class DictationService : AccessibilityService(), IslandView.Listener {
 
-    private enum class Mode { IDLE, RECORDING, TRANSCRIBING, FEEDBACK, OFFER }
+    private enum class Mode { IDLE, RECORDING, TRANSCRIBING, FEEDBACK }
 
     /** Position et taille du trou de la caméra, en pixels écran. */
     private data class Hole(val cx: Int, val cy: Int, val diameter: Int)
@@ -68,8 +68,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private var mode = Mode.IDLE
     private var transcribeJob: Job? = null
     private var refreshPending = false
-    /** Dernière version proposée dans l'île : on ne la propose qu'une fois. */
-    private var offeredVersion = 0
+    private val updatePrefs by lazy { getSharedPreferences("update", MODE_PRIVATE) }
 
     // Temps réel (Mistral Voxtral Realtime)
     private var live: MistralRealtime? = null
@@ -89,6 +88,8 @@ class DictationService : AccessibilityService(), IslandView.Listener {
      * reçu après [liveRawBase] reste à écrire, à la suite.
      */
     private var liveRawBase = 0
+    /** Moment de notre dernière écriture directe (les champs Compose l'affichent avec un léger retard). */
+    private var lastWriteAt = 0L
     private var lastDeltaAt = 0L
 
     // Copie locale de l'audio temps réel, pour pouvoir réessayer si la transcription échoue.
@@ -132,6 +133,12 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         }
         scope.launch {
             Graph.settings.state.collect { if (!it.bubbleEnabled && mode == Mode.IDLE) hide() }
+        }
+        // Une mise à jour arrive pendant que l'île est au repos : on la propose tout de suite.
+        scope.launch {
+            Updater.state.collect {
+                if (mode == Mode.IDLE && attached && !hiding && island.state != idleState()) island.setState(idleState())
+            }
         }
         // Juste après une mise à jour lancée depuis l'écran : on rouvre Dictée.
         Relauncher.relaunch(this)
@@ -207,9 +214,10 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         if (attached && !hiding) return
         if (hiding) {
             hiding = false
-            island.setState(IslandView.State.IDLE)
+            island.setState(idleState())
             return
         }
+        Updater.checkIfStale(30 * 60 * 1000L)
         hole = findHole()
         island.setHole(hole.diameter.toFloat())
         params.height = island.windowHeight
@@ -217,7 +225,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         resizeWindow(island.windowWidthFor(hole.diameter.toFloat()), params.height, update = false)
         runCatching { wm.addView(island, params) }.onSuccess {
             attached = true
-            island.setState(IslandView.State.IDLE)
+            island.setState(idleState())
         }
     }
 
@@ -268,7 +276,6 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             Mode.IDLE, Mode.FEEDBACK -> startRecording()
             Mode.RECORDING -> stopRecording()
             Mode.TRANSCRIBING -> Unit
-            Mode.OFFER -> installOffered()
         }
     }
 
@@ -287,29 +294,28 @@ class DictationService : AccessibilityService(), IslandView.Listener {
                 cancelLive(restoreField = true)
                 resetToIdle()
             }
-            Mode.OFFER -> resetToIdle()
-            else -> openApp()
+            Mode.IDLE, Mode.FEEDBACK -> if (island.state == IslandView.State.UPDATE) {
+                // Appui long sur la proposition : on ne la montre plus pour cette version.
+                Updater.available?.let { updatePrefs.edit().putInt(DISMISSED_VERSION, it.versionCode).apply() }
+                vibrate(VibrationEffect.EFFECT_TICK)
+                island.setState(IslandView.State.IDLE)
+            } else {
+                openApp()
+            }
         }
     }
 
-    /**
-     * Après une dictée réussie : si une nouvelle version existe, l'île la propose quelques secondes.
-     * Un tap l'installe, un appui long l'ignore. Une seule fois par version.
-     */
-    private fun offerUpdate(): Boolean {
-        val r = Updater.available ?: return false
-        if (r.versionCode == offeredVersion || !attached || hiding) return false
-        offeredVersion = r.versionCode
-        mode = Mode.OFFER
-        busy = false
-        island.setState(IslandView.State.UPDATE, "Mise à jour")
-        main.removeCallbacks(resetRunnable)
-        main.postDelayed(resetRunnable, 6000)
-        return true
+    /** État de repos de l'île : avec la proposition de mise à jour s'il y en a une (non masquée). */
+    private fun idleState(): IslandView.State {
+        val r = Updater.available ?: return IslandView.State.IDLE
+        val dismissed = updatePrefs.getInt(DISMISSED_VERSION, 0)
+        return if (r.versionCode > dismissed) IslandView.State.UPDATE else IslandView.State.IDLE
     }
 
-    private fun installOffered() {
-        val r = Updater.available ?: return resetToIdle()
+    /** Tap sur « ↓ Mise à jour » : installation sans rouvrir Dictée (tu restes dans ton appli). */
+    override fun onUpdateTap() {
+        if (mode != Mode.IDLE && mode != Mode.FEEDBACK) return
+        val r = Updater.available ?: return
         main.removeCallbacks(resetRunnable)
         mode = Mode.FEEDBACK
         island.setState(IslandView.State.TRANSCRIBING)
@@ -448,8 +454,8 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private val sentWatch = object : Runnable {
         override fun run() {
             if (mode != Mode.RECORDING || live == null) return
-            if (liveWritten && liveField != null && followUserEdits()) return
-            main.postDelayed(this, 250)
+            if (liveWritten && liveField != null) followUserEdits()
+            if (mode == Mode.RECORDING && live != null) main.postDelayed(this, 250)
         }
     }
 
@@ -471,8 +477,6 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         // Seulement ce qui était écrit au moment de l'envoi, pas un mot arrivé juste après.
         val sent = TextFormatter.format(liveText.substring(0, writtenRawLen.coerceAtMost(liveText.length)), Graph.settings.current.formatOptions).trim()
         if (sent.isNotEmpty()) Graph.history.add(sent, "Mistral · temps réel", MistralRealtime.MODEL, liveDurationMs)
-        // Pas de proposition de mise à jour ici : tu vas sûrement toucher l'île pour le message suivant.
-        offeredVersion = Updater.available?.versionCode ?: offeredVersion
         succeed("Envoyé")
     }
 
@@ -520,9 +524,22 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             main.removeCallbacks(writeField)
             main.removeCallbacks(sentWatch)
             fieldWritePending = false
-            // Message envoyé pendant les derniers mots : on s'arrête là, sans rien réécrire
-            // (l'enregistrement du coût et de l'historique est fait par onMessageSent).
-            if (liveWritten && followUserEdits()) return
+            completeLive(finalText)
+        }
+
+        override fun onError(message: String) = handleLiveError(message)
+    }
+
+    /**
+     * Fin du direct. Si le champ n'affiche pas encore notre dernière écriture, on réessaie un peu plus tard ;
+     * s'il a été vidé (message envoyé), on s'arrête sans rien réécrire (onMessageSent s'occupe du reste).
+     */
+    private fun completeLive(finalText: String) {
+        run {
+            if (liveWritten && followUserEdits()) {
+                if (mode == Mode.TRANSCRIBING) main.postDelayed({ completeLive(finalText) }, 200)
+                return
+            }
             // Déjà écrit en direct dans le champ : on garde exactement ce texte, on n'y retouche que pour
             // ajouter les derniers mots. Sinon, la version finale de Mistral (sans nos pauses).
             val raw = if (liveWritten || TextFormatter.PAUSE in liveText) liveText.toString()
@@ -556,22 +573,22 @@ class DictationService : AccessibilityService(), IslandView.Listener {
                 succeed("Copié")
             }
         }
+    }
 
-        override fun onError(message: String) {
-            live = null
-            streamer?.let { liveDurationMs = it.durationMs; it.stop() }
-            streamer = null
-            // On garde l'audio pour pouvoir réessayer depuis l'historique.
-            val pcm = closePcm()
-            if (pcm != null && pcm.length() > PcmStreamer.SAMPLE_RATE * 2 / 2) {
-                val wav = WavFile.fromPcm(pcm, java.io.File(cacheDir, pcm.nameWithoutExtension + ".wav"))
-                pcm.delete()
-                Graph.history.addFailed("Mistral · temps réel", MistralRealtime.MODEL, liveDurationMs, message, wav)
-                fail("$message · gardée dans l'historique pour réessayer")
-            } else {
-                pcm?.delete()
-                fail(message)
-            }
+    private fun handleLiveError(message: String) {
+        live = null
+        streamer?.let { liveDurationMs = it.durationMs; it.stop() }
+        streamer = null
+        // On garde l'audio pour pouvoir réessayer depuis l'historique.
+        val pcm = closePcm()
+        if (pcm != null && pcm.length() > PcmStreamer.SAMPLE_RATE * 2 / 2) {
+            val wav = WavFile.fromPcm(pcm, java.io.File(cacheDir, pcm.nameWithoutExtension + ".wav"))
+            pcm.delete()
+            Graph.history.addFailed("Mistral · temps réel", MistralRealtime.MODEL, liveDurationMs, message, wav)
+            fail("$message · gardée dans l'historique pour réessayer")
+        } else {
+            pcm?.delete()
+            fail(message)
         }
     }
 
@@ -777,6 +794,16 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         val shown = field.node.text?.toString().orEmpty()
         if (shown == last) return false
 
+        // Le champ n'affiche peut-être pas encore notre dernière écriture (léger retard des champs Compose) :
+        // on ne conclut rien, on n'écrit pas par-dessus, et on revérifie un peu plus tard.
+        if (android.os.SystemClock.elapsedRealtime() - lastWriteAt < SETTLE_MS) {
+            if (!fieldWritePending) {
+                fieldWritePending = true
+                main.postDelayed(writeField, 150)
+            }
+            return true
+        }
+
         // Champ vidé : vide, texte d'aide connu, ou texte d'aide non signalé (court, curseur au début,
         // et plus rien de notre dictée).
         val cursor = field.node.textSelectionStart
@@ -816,7 +843,10 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             AccessibilityNodeInfo.ACTION_SET_TEXT,
             Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) },
         )
-        if (ok) setSelection(node, cursor)
+        if (ok) {
+            setSelection(node, cursor)
+            lastWriteAt = android.os.SystemClock.elapsedRealtime()
+        }
         return ok
     }
 
@@ -899,10 +929,9 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
     private fun resetToIdle() {
         main.removeCallbacks(resetRunnable)
-        if (mode == Mode.FEEDBACK && island.state == IslandView.State.SUCCESS && offerUpdate()) return
         mode = Mode.IDLE
         busy = false
-        if (attached && !hiding) island.setState(IslandView.State.IDLE)
+        if (attached && !hiding) island.setState(idleState())
         refreshIsland()
     }
 
@@ -953,6 +982,9 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
     companion object {
         private const val MAX_RECORDING_MS = 10 * 60 * 1000L
+        private const val DISMISSED_VERSION = "island_dismissed_version"
+        /** Délai pendant lequel un champ peut encore afficher l'avant-dernière version de notre texte. */
+        private const val SETTLE_MS = 700L
 
         /** Vrai pendant une dictée : la mise à jour automatique attend qu'elle soit finie. */
         @Volatile

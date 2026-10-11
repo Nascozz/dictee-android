@@ -29,6 +29,8 @@ data class AppSettings(
     val pauseSeconds: Float,
     /** Temps réel : quand le message part (champ vidé), l'écoute s'arrête. */
     val stopOnSend: Boolean,
+    /** Chaque point devient : 0 = rien, 1 = retour à la ligne, 2 = ligne vide. */
+    val periodBreaks: Int,
     /** Fournisseurs pour lesquels une clé API est enregistrée. */
     val keyed: Set<String>,
 ) {
@@ -37,7 +39,9 @@ data class AppSettings(
     fun hasKey(p: Provider): Boolean = p.id in keyed
     val useRealtime: Boolean get() = realtime && provider == Provider.MISTRAL
     val formatOptions: TextFormatter.Options
-        get() = TextFormatter.Options(voiceCommands, minimalPunctuation, french = language == "fr" || language == "auto")
+        get() = TextFormatter.Options(
+            voiceCommands, minimalPunctuation, french = language == "fr" || language == "auto", periodBreaks = periodBreaks,
+        )
 }
 
 class SettingsStore(context: Context) {
@@ -62,6 +66,7 @@ class SettingsStore(context: Context) {
         pauseBreak = prefs.getBoolean("pause_break", true),
         pauseSeconds = prefs.getFloat("pause_seconds", 2.5f),
         stopOnSend = prefs.getBoolean("stop_on_send", true),
+        periodBreaks = prefs.getInt("period_breaks", 0),
         keyed = Provider.entries.filter { prefs.contains("key_${it.id}") }.map { it.id }.toSet(),
     )
 
@@ -85,6 +90,7 @@ class SettingsStore(context: Context) {
     fun setPauseBreak(v: Boolean) = edit { putBoolean("pause_break", v) }
     fun setPauseSeconds(v: Float) = edit { putFloat("pause_seconds", v) }
     fun setStopOnSend(v: Boolean) = edit { putBoolean("stop_on_send", v) }
+    fun setPeriodBreaks(v: Int) = edit { putInt("period_breaks", v) }
 
     fun setApiKey(p: Provider, key: String?) = edit {
         if (key.isNullOrBlank()) remove("key_${p.id}") else putString("key_${p.id}", SecretBox.encrypt(key.trim()))

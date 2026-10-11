@@ -69,4 +69,22 @@ class TextFormatterTest {
         assertEquals("Premier sujet\nDeuxième sujet", f("Premier sujet.$PAUSE deuxième sujet", minimal))
 
     @Test fun pauseAuDebutIgnoree() = assertEquals("Bonjour", f("${PAUSE}Bonjour"))
+
+    private val single = normal.copy(periodBreaks = 1)
+    private val double = normal.copy(periodBreaks = 2)
+
+    @Test fun pointsEnRetourALaLigne() =
+        assertEquals("Salut\nÇa va ? On se voit demain", f("Salut. ça va ? On se voit demain.", single).trim())
+
+    @Test fun pointsEnDoubleRetour() =
+        assertEquals("Salut\n\nÇa va", f("Salut. ça va.", double).trim())
+
+    @Test fun pointDicteDevientRetour() =
+        assertEquals("Fini\nEnsuite", f("Fini point ensuite", single))
+
+    @Test fun pointsDeSuspensionEtNombresIntacts() =
+        assertEquals("Bon... 3.5 ou 4", f("Bon... 3.5 ou 4", single))
+
+    @Test fun pauseNeDoublePasLeRetour() =
+        assertEquals("Premier sujet\nDeuxième sujet", f("Premier sujet$PAUSE deuxième sujet", single))
 }
