@@ -30,6 +30,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.nascozz.dictee.update.Relauncher
 import com.nascozz.dictee.update.Updater
 
 class MainActivity : ComponentActivity() {
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
         setContent { DicteeTheme { AppRoot() } }
+        Relauncher.done(this)
         if (savedInstanceState == null) Updater.check()
     }
 }

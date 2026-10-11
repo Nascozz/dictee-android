@@ -2,12 +2,16 @@ package com.nascozz.dictee.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.text.format.DateUtils
+import android.view.HapticFeedbackConstants
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,7 +44,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nascozz.dictee.Graph
@@ -49,6 +55,7 @@ import com.nascozz.dictee.data.ModelUsage
 import com.nascozz.dictee.data.UsageStore
 import com.nascozz.dictee.stt.MistralRealtime
 import com.nascozz.dictee.stt.Pricing
+import com.nascozz.dictee.stt.Retrier
 import java.time.LocalDate
 import java.time.format.TextStyle
 import java.util.Locale
@@ -78,11 +85,15 @@ fun HistoryScreen() {
                         )
                     }
                 }
-                if (items.isNotEmpty()) GhostButton("Tout effacer") { Graph.history.clear() }
+                if (items.isNotEmpty()) HoldToDelete(label = "Tout effacer") { Graph.history.clear() }
             }
         }
         if (items.isEmpty()) item { EmptyHistory() }
-        items(items, key = { it.id }) { HistoryCard(it) }
+        items(items, key = { it.id }) { entry ->
+            Box(Modifier.animateItem()) {
+                if (entry.failed) FailedCard(entry) else HistoryCard(entry)
+            }
+        }
     }
 }
 
@@ -293,23 +304,107 @@ private fun HistoryCard(entry: HistoryEntry) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusDot(Ink.Red.copy(alpha = 0.7f), size = 6.dp)
             Spacer(Modifier.width(8.dp))
-            val sec = entry.durationMs / 1000
-            Text(
-                "${sec / 60}:%02d · ".format(sec % 60) +
-                    DateUtils.getRelativeTimeSpanString(entry.id).toString() + " · ${entry.provider}",
-                style = MaterialTheme.typography.labelSmall.merge(TabularNums),
-                color = Ink.Faint,
-                modifier = Modifier.weight(1f),
-            )
+            EntryMeta(entry, Modifier.weight(1f))
             IconButton(onClick = {
                 clipboard.setText(AnnotatedString(entry.text))
                 Toast.makeText(ctx, "Copié", Toast.LENGTH_SHORT).show()
             }) {
                 Icon(Icons.Rounded.ContentCopy, contentDescription = "Copier", tint = Ink.Muted, modifier = Modifier.size(18.dp))
             }
-            IconButton(onClick = { Graph.history.delete(entry.id) }) {
-                Icon(Icons.Rounded.DeleteOutline, contentDescription = "Supprimer", tint = Ink.Muted, modifier = Modifier.size(18.dp))
-            }
+            HoldToDelete { Graph.history.delete(entry.id) }
         }
+    }
+}
+
+/** Dictée ratée (coupure, délai dépassé…) : l'audio est gardé, on peut réessayer. */
+@Composable
+private fun FailedCard(entry: HistoryEntry) {
+    val ctx = LocalContext.current
+    val running by Retrier.running.collectAsStateWithLifecycle()
+    val retrying = entry.id in running
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(Ink.Surface)
+            .border(1.dp, Ink.Red.copy(alpha = 0.35f), RoundedCornerShape(24.dp))
+            .padding(start = 18.dp, end = 6.dp, top = 16.dp, bottom = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(Ink.Red, size = 8.dp, pulse = retrying)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                if (retrying) "Nouvelle tentative…" else "La transcription a échoué",
+                style = MaterialTheme.typography.titleSmall,
+                color = Ink.Text,
+            )
+        }
+        entry.error?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = Ink.Faint,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 4.dp, end = 12.dp),
+            )
+        }
+        Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            PillButton(if (retrying) "En cours…" else "Réessayer et copier", enabled = !retrying) {
+                Retrier.retry(ctx, entry)
+            }
+            Spacer(Modifier.width(10.dp))
+            EntryMeta(entry, Modifier.weight(1f))
+            HoldToDelete { Graph.history.delete(entry.id) }
+        }
+    }
+}
+
+@Composable
+private fun EntryMeta(entry: HistoryEntry, modifier: Modifier = Modifier) {
+    val sec = entry.durationMs / 1000
+    Text(
+        "${sec / 60}:%02d · ".format(sec % 60) +
+            DateUtils.getRelativeTimeSpanString(entry.id).toString() + " · ${entry.provider}",
+        style = MaterialTheme.typography.labelSmall.merge(TabularNums),
+        color = Ink.Faint,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier,
+    )
+}
+
+/**
+ * Suppression volontaire : il faut maintenir. Un simple appui rappelle le geste ;
+ * la vibration confirme que c'est supprimé.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun HoldToDelete(label: String? = null, onDelete: () -> Unit) {
+    val ctx = LocalContext.current
+    val view = LocalView.current
+    val gesture = Modifier
+        .clip(RoundedCornerShape(50))
+        .combinedClickable(
+            onClick = { Toast.makeText(ctx, "Maintiens pour supprimer", Toast.LENGTH_SHORT).show() },
+            onLongClick = {
+                view.performHapticFeedback(
+                    if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.LONG_PRESS
+                )
+                onDelete()
+            },
+        )
+    if (label == null) {
+        Box(gesture.size(44.dp), contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Maintenir pour supprimer", tint = Ink.Muted, modifier = Modifier.size(18.dp))
+        }
+    } else {
+        Box(
+            gesture
+                .border(1.dp, Ink.LineStrong, RoundedCornerShape(50))
+                .height(38.dp)
+                .padding(horizontal = 18.dp),
+            contentAlignment = Alignment.Center,
+        ) { Text(label, style = MaterialTheme.typography.labelLarge, color = Ink.Text) }
     }
 }

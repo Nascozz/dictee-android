@@ -64,6 +64,8 @@ object Updater {
     fun install(context: Context, release: Release) {
         if (job?.isActive == true) return
         val app = context.applicationContext
+        // Lancée depuis l'écran : on rouvrira Dictée après l'installation.
+        Relauncher.request(app)
         job = Graph.appScope.launch {
             try {
                 downloadAndInstall(app, release)

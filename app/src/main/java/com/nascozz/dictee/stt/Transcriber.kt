@@ -30,11 +30,13 @@ data class SttRequest(
 object Transcriber {
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .writeTimeout(120, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
+        // Les longues dictées peuvent prendre du temps à envoyer et à transcrire.
+        .writeTimeout(300, TimeUnit.SECONDS)
+        .readTimeout(300, TimeUnit.SECONDS)
         .build()
 
-    private val AUDIO = "audio/mp4".toMediaType()
+    private val M4A = "audio/mp4".toMediaType()
+    private val WAV = "audio/wav".toMediaType()
 
     suspend fun transcribe(audio: File, r: SttRequest): String = withContext(Dispatchers.IO) {
         val request = buildRequest(audio, r)
@@ -56,11 +58,14 @@ object Transcriber {
     private fun buildRequest(audio: File, r: SttRequest): Request {
         val base = (if (r.provider == Provider.CUSTOM) r.customBaseUrl else r.provider.baseUrl).trimEnd('/')
         if (base.isBlank()) throw SttException("Renseigne l'URL de l'API dans les réglages")
-        val fileBody = audio.asRequestBody(AUDIO)
+        // .m4a pour une dictée classique, .wav pour l'audio gardé d'une dictée temps réel ratée.
+        val isWav = audio.extension == "wav"
+        val fileBody = audio.asRequestBody(if (isWav) WAV else M4A)
+        val fileName = if (isWav) "audio.wav" else "audio.m4a"
         return when (r.provider.shape) {
             ApiShape.OPENAI_COMPATIBLE -> {
                 val form = MultipartBody.Builder().setType(MultipartBody.FORM)
-                    .addFormDataPart("file", "audio.m4a", fileBody)
+                    .addFormDataPart("file", fileName, fileBody)
                     .addFormDataPart("model", r.model)
                 r.language?.let { form.addFormDataPart("language", it) }
                 if (r.provider.supportsPrompt && !r.prompt.isNullOrBlank()) form.addFormDataPart("prompt", r.prompt)
@@ -70,7 +75,7 @@ object Transcriber {
             }
             ApiShape.ELEVENLABS -> {
                 val form = MultipartBody.Builder().setType(MultipartBody.FORM)
-                    .addFormDataPart("file", "audio.m4a", fileBody)
+                    .addFormDataPart("file", fileName, fileBody)
                     .addFormDataPart("model_id", r.model)
                     .addFormDataPart("tag_audio_events", "false")
                 r.language?.let { form.addFormDataPart("language_code", it) }

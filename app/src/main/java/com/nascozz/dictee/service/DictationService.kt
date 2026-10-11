@@ -27,12 +27,14 @@ import android.widget.Toast
 import com.nascozz.dictee.Graph
 import com.nascozz.dictee.audio.PcmStreamer
 import com.nascozz.dictee.audio.Recorder
+import com.nascozz.dictee.audio.WavFile
 import com.nascozz.dictee.stt.MistralRealtime
 import com.nascozz.dictee.stt.TextFormatter
 import com.nascozz.dictee.stt.SttException
 import com.nascozz.dictee.stt.SttRequest
 import com.nascozz.dictee.stt.Transcriber
 import com.nascozz.dictee.ui.MainActivity
+import com.nascozz.dictee.update.Relauncher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -77,6 +79,11 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private var liveWritten = false
     private var lastDeltaAt = 0L
 
+    // Copie locale de l'audio temps réel, pour pouvoir réessayer si la transcription échoue.
+    private val pcmLock = Any()
+    private var pcmFile: java.io.File? = null
+    private var pcmOut: java.io.OutputStream? = null
+
     /** Champ qu'on peut réécrire en direct : on garde ce qu'il y avait avant et après le curseur. */
     private class LiveField(
         val node: AccessibilityNodeInfo,
@@ -114,6 +121,8 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         scope.launch {
             Graph.settings.state.collect { if (!it.bubbleEnabled && mode == Mode.IDLE) hide() }
         }
+        // Juste après une mise à jour lancée depuis l'écran : on rouvre Dictée.
+        Relauncher.relaunch(this)
     }
 
     // --- Suivi du champ de texte ----------------------------------------------------------------
@@ -347,9 +356,13 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: SttException) {
-                fail(e.message ?: "Erreur de transcription")
+                val msg = e.message ?: "Erreur de transcription"
+                Graph.history.addFailed(provider.label, request.model, duration, msg, file)
+                fail("$msg · gardée dans l'historique pour réessayer")
             } catch (e: Exception) {
-                fail("Erreur : ${e.message}")
+                val msg = "Erreur : ${e.message}"
+                Graph.history.addFailed(provider.label, request.model, duration, msg, file)
+                fail("$msg · gardée dans l'historique pour réessayer")
             } finally {
                 file.delete()
             }
@@ -363,8 +376,13 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         liveWritten = false
         liveField = prepareLiveField()
         val session = MistralRealtime(Graph.settings.apiKey(com.nascozz.dictee.stt.Provider.MISTRAL).orEmpty(), liveListener)
-        val pcm = PcmStreamer { session.sendAudio(it) }
+        openPcm()
+        val pcm = PcmStreamer {
+            session.sendAudio(it)
+            writePcm(it)
+        }
         if (!pcm.start()) {
+            closePcm()?.delete()
             fail("Micro indisponible", "Micro")
             return
         }
@@ -425,6 +443,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             val raw = if (TextFormatter.PAUSE in liveText) liveText.toString() else finalText.ifBlank { liveText.toString() }
             val text = TextFormatter.format(raw, Graph.settings.current.formatOptions).trim()
             Graph.usage.record(MistralRealtime.MODEL, liveDurationMs)
+            closePcm()?.delete()
             val field = liveField
             liveField = null
             if (text.isEmpty()) {
@@ -452,8 +471,36 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
         override fun onError(message: String) {
             live = null
-            fail(message)
+            streamer?.let { liveDurationMs = it.durationMs; it.stop() }
+            streamer = null
+            // On garde l'audio pour pouvoir réessayer depuis l'historique.
+            val pcm = closePcm()
+            if (pcm != null && pcm.length() > PcmStreamer.SAMPLE_RATE * 2 / 2) {
+                val wav = WavFile.fromPcm(pcm, java.io.File(cacheDir, pcm.nameWithoutExtension + ".wav"))
+                pcm.delete()
+                Graph.history.addFailed("Mistral · temps réel", MistralRealtime.MODEL, liveDurationMs, message, wav)
+                fail("$message · gardée dans l'historique pour réessayer")
+            } else {
+                pcm?.delete()
+                fail(message)
+            }
         }
+    }
+
+    private fun openPcm() = synchronized(pcmLock) {
+        closePcm()?.delete()
+        val f = java.io.File(cacheDir, "live-${System.currentTimeMillis()}.pcm")
+        pcmFile = f
+        pcmOut = runCatching { f.outputStream().buffered() }.getOrNull()
+    }
+
+    private fun writePcm(chunk: ByteArray) = synchronized(pcmLock) { runCatching { pcmOut?.write(chunk) } }
+
+    /** Ferme la copie locale et la rend (null s'il n'y en avait pas). */
+    private fun closePcm(): java.io.File? = synchronized(pcmLock) {
+        runCatching { pcmOut?.close() }
+        pcmOut = null
+        pcmFile.also { pcmFile = null }
     }
 
     /**
@@ -605,6 +652,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         streamer = null
         live?.cancel()
         live = null
+        closePcm()?.delete()
         val field = liveField
         liveField = null
         if (field != null && ((restoreField && liveText.isNotEmpty()) || field.primed)) {
