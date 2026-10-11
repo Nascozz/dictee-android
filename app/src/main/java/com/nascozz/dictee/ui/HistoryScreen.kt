@@ -47,6 +47,7 @@ import com.nascozz.dictee.Graph
 import com.nascozz.dictee.data.HistoryEntry
 import com.nascozz.dictee.data.ModelUsage
 import com.nascozz.dictee.data.UsageStore
+import com.nascozz.dictee.stt.MistralRealtime
 import com.nascozz.dictee.stt.Pricing
 import java.time.LocalDate
 import java.time.format.TextStyle
@@ -115,6 +116,24 @@ private fun UsageCard() {
             Stat("de voix", duration(monthSeconds), Modifier.weight(1f))
             Stat("dictées", monthCount.toString(), Modifier.weight(1f))
             Stat("par minute", if (monthSeconds > 0) usd(monthCost / (monthSeconds / 60)) else "—", Modifier.weight(1f))
+        }
+
+        // Tarif du mode en cours : change dès qu'on bascule le temps réel ou qu'on change de modèle.
+        val currentModel = if (settings.useRealtime) MistralRealtime.MODEL else settings.modelFor(settings.provider)
+        Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(Ink.Red, size = 6.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Tarif actuel · ${prettyModel(currentModel)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Ink.Muted,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                Pricing.perMinute(currentModel)?.let { usd(it) + "/min" } ?: "prix inconnu",
+                style = MaterialTheme.typography.bodySmall.merge(TabularNums),
+                color = Ink.Text,
+            )
         }
 
         Spacer(Modifier.height(20.dp))
@@ -223,9 +242,11 @@ private fun prettyModel(m: String) = when {
     else -> m
 }
 
+/** Les dictées coûtent quelques millièmes de dollar : on garde assez de décimales pour voir chacune compter. */
 private fun usd(v: Double): String = when {
     v <= 0.0 -> "0 $"
-    v < 0.01 -> String.format(Locale.FRANCE, "%.3f $", v)
+    v < 0.001 -> String.format(Locale.FRANCE, "%.4f $", v)
+    v < 1.0 -> String.format(Locale.FRANCE, "%.3f $", v)
     else -> String.format(Locale.FRANCE, "%.2f $", v)
 }
 

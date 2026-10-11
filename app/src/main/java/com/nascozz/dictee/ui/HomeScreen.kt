@@ -12,6 +12,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -34,6 +35,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Accessibility
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Notifications
@@ -47,10 +49,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
@@ -92,6 +96,11 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
     val hasKey = settings.hasKey(settings.provider)
     val ready = status.mic && status.accessibility && hasKey
     val steps = listOf(status.mic, hasKey, status.accessibility, status.installs)
+    val allDone = steps.all { it }
+    // Une fois tout configuré, la checklist se replie en une ligne ; on peut la rouvrir.
+    var setupOpen by rememberSaveable(allDone) { mutableStateOf(!allDone) }
+    val modeLabel = if (settings.useRealtime) "${settings.provider.label} · temps réel"
+    else "${settings.provider.label} · ${settings.modelFor(settings.provider)}"
 
     Column(
         Modifier
@@ -99,94 +108,102 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
             .verticalScroll(rememberScrollState())
             .imePadding()
             .padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        ScreenTitle("Dictée")
-        Text(
-            "Parle. Ça s'écrit.",
-            style = MaterialTheme.typography.titleMedium,
-            color = Ink.Muted,
-            modifier = Modifier.padding(bottom = 6.dp),
-        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            ScreenTitle("Dictée")
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "Parle. Ça s'écrit.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Ink.Muted,
+                modifier = Modifier.padding(bottom = 14.dp),
+            )
+        }
 
-        Showcase(ready, "${settings.provider.label} · ${settings.modelFor(settings.provider)}")
+        Showcase(ready, modeLabel)
         UpdateBanner()
 
-        SectionCard(title = if (ready) "Configuration · terminée" else "Configuration · ${steps.count { it }}/${steps.size}") {
-            SetupStep(Icons.Rounded.Mic, "Micro", "Pour entendre ta voix", status.mic, "Autoriser") {
-                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            }
-            SetupStep(
-                Icons.Rounded.Key,
-                "Clé API ${settings.provider.label}",
-                if (hasKey) "Chiffrée sur ce téléphone" else "Pour transcrire ta voix",
-                hasKey,
-                "Ajouter",
-                onAction = onOpenSettings,
-            )
-            SetupStep(
-                Icons.Rounded.Accessibility,
-                "Île de dictée",
-                "Active « Bulle Dictée » dans Accessibilité",
-                status.accessibility,
-                "Activer",
-            ) { openAccessibilitySettings(ctx) }
-            AnimatedVisibility(!status.accessibility) {
-                Column(
-                    Modifier
-                        .padding(start = 52.dp, top = 2.dp, bottom = 10.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Ink.SurfaceHigh)
-                        .clickable { openAppDetails(ctx) }
-                        .padding(14.dp)
-                ) {
-                    Text(
-                        "Option grisée ? Infos de l'appli → ⋮ → « Autoriser les paramètres restreints », puis reviens l'activer.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Ink.Muted,
+        SectionCard {
+            SetupHeader(allDone, "${steps.count { it }}/${steps.size}", setupOpen) { setupOpen = !setupOpen }
+            AnimatedVisibility(setupOpen) {
+                Column(Modifier.padding(top = 6.dp)) {
+                    SetupStep(Icons.Rounded.Mic, "Micro", "Pour entendre ta voix", status.mic, "Autoriser") {
+                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                    SetupStep(
+                        Icons.Rounded.Key,
+                        "Clé API ${settings.provider.label}",
+                        if (hasKey) "Chiffrée sur ce téléphone" else "Pour transcrire ta voix",
+                        hasKey,
+                        "Ajouter",
+                        onAction = onOpenSettings,
                     )
-                    Text(
-                        "Ouvrir les infos de l'appli",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = Ink.RedSoft,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
+                    SetupStep(
+                        Icons.Rounded.Accessibility,
+                        "Île de dictée",
+                        "Active « Bulle Dictée » dans Accessibilité",
+                        status.accessibility,
+                        "Activer",
+                    ) { openAccessibilitySettings(ctx) }
+                    AnimatedVisibility(!status.accessibility) {
+                        Column(
+                            Modifier
+                                .padding(start = 52.dp, top = 2.dp, bottom = 10.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Ink.SurfaceHigh)
+                                .clickable { openAppDetails(ctx) }
+                                .padding(14.dp)
+                        ) {
+                            Text(
+                                "Option grisée ? Infos de l'appli → ⋮ → « Autoriser les paramètres restreints », puis reviens l'activer.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Ink.Muted,
+                            )
+                            Text(
+                                "Ouvrir les infos de l'appli",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Ink.RedSoft,
+                                modifier = Modifier.padding(top = 8.dp),
+                            )
+                        }
+                    }
+                    SetupStep(
+                        Icons.Rounded.SystemUpdate,
+                        "Mises à jour auto",
+                        "Installer les nouvelles versions",
+                        status.installs,
+                        "Autoriser",
+                    ) {
+                        ctx.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")))
+                    }
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        SetupStep(
+                            Icons.Rounded.Notifications,
+                            "Notifications",
+                            "Optionnel · prévenir des mises à jour",
+                            status.notifications,
+                            "Autoriser",
+                        ) { permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+                    }
                 }
-            }
-            SetupStep(
-                Icons.Rounded.SystemUpdate,
-                "Mises à jour auto",
-                "Installer les nouvelles versions",
-                status.installs,
-                "Autoriser",
-            ) {
-                ctx.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")))
-            }
-            if (Build.VERSION.SDK_INT >= 33) {
-                SetupStep(
-                    Icons.Rounded.Notifications,
-                    "Notifications",
-                    "Optionnel · prévenir des mises à jour",
-                    status.notifications,
-                    "Autoriser",
-                ) { permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
             }
         }
 
         SectionCard(title = "Essaie ici") {
             var text by remember { mutableStateOf("") }
             Text(
-                "Touche le champ : l'île sort de la caméra. Touche-la, parle, touche encore. Appui long pour annuler.",
-                style = MaterialTheme.typography.bodyMedium,
+                "Touche le champ, puis l'île en haut. Parle, touche encore. Appui long pour annuler.",
+                style = MaterialTheme.typography.bodySmall,
                 color = Ink.Muted,
             )
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text("Ton texte apparaîtra ici…") },
-                minLines = 3,
+                minLines = 2,
                 shape = RoundedCornerShape(18.dp),
                 colors = inkFieldColors(),
             )
@@ -204,14 +221,14 @@ private fun Showcase(ready: Boolean, subtitle: String) {
             .clip(CardShape)
             .background(Ink.Surface)
             .border(1.dp, Ink.Line, CardShape)
-            .padding(vertical = 30.dp, horizontal = 20.dp),
+            .padding(vertical = 18.dp, horizontal = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Box(Modifier.size(width = 300.dp, height = 120.dp).background(RedGlow))
+            Box(Modifier.size(width = 260.dp, height = 84.dp).background(RedGlow))
             IslandDemo()
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(4.dp))
         Row(
             Modifier
                 .clip(RoundedCornerShape(50))
@@ -230,6 +247,36 @@ private fun Showcase(ready: Boolean, subtitle: String) {
                 textAlign = TextAlign.Center,
             )
         }
+    }
+}
+
+/** En-tête de la checklist : une seule ligne « terminée » quand tout est prêt, cliquable pour déplier. */
+@Composable
+private fun SetupHeader(done: Boolean, progress: String, open: Boolean, onToggle: () -> Unit) {
+    val rotation by animateFloatAsState(if (open) 180f else 0f, label = "chevron")
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onToggle),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (done) {
+            Box(
+                Modifier.size(28.dp).clip(CircleShape).background(Ink.Green.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Rounded.Check, contentDescription = null, tint = Ink.Green, modifier = Modifier.size(16.dp)) }
+            Spacer(Modifier.width(10.dp))
+            Text("Configuration terminée", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        } else {
+            Eyebrow("Configuration · $progress", Modifier.weight(1f))
+        }
+        Icon(
+            Icons.Rounded.ExpandMore,
+            contentDescription = if (open) "Replier" else "Déplier",
+            tint = Ink.Muted,
+            modifier = Modifier.rotate(rotation),
+        )
     }
 }
 
