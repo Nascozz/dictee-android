@@ -35,6 +35,7 @@ import com.nascozz.dictee.stt.SttRequest
 import com.nascozz.dictee.stt.Transcriber
 import com.nascozz.dictee.ui.MainActivity
 import com.nascozz.dictee.update.Relauncher
+import com.nascozz.dictee.update.Updater
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -48,7 +49,7 @@ import kotlinx.coroutines.launch
  */
 class DictationService : AccessibilityService(), IslandView.Listener {
 
-    private enum class Mode { IDLE, RECORDING, TRANSCRIBING, FEEDBACK }
+    private enum class Mode { IDLE, RECORDING, TRANSCRIBING, FEEDBACK, OFFER }
 
     /** Position et taille du trou de la caméra, en pixels écran. */
     private data class Hole(val cx: Int, val cy: Int, val diameter: Int)
@@ -67,6 +68,8 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private var mode = Mode.IDLE
     private var transcribeJob: Job? = null
     private var refreshPending = false
+    /** Dernière version proposée dans l'île : on ne la propose qu'une fois. */
+    private var offeredVersion = 0
 
     // Temps réel (Mistral Voxtral Realtime)
     private var live: MistralRealtime? = null
@@ -265,6 +268,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             Mode.IDLE, Mode.FEEDBACK -> startRecording()
             Mode.RECORDING -> stopRecording()
             Mode.TRANSCRIBING -> Unit
+            Mode.OFFER -> installOffered()
         }
     }
 
@@ -283,8 +287,36 @@ class DictationService : AccessibilityService(), IslandView.Listener {
                 cancelLive(restoreField = true)
                 resetToIdle()
             }
+            Mode.OFFER -> resetToIdle()
             else -> openApp()
         }
+    }
+
+    /**
+     * Après une dictée réussie : si une nouvelle version existe, l'île la propose quelques secondes.
+     * Un tap l'installe, un appui long l'ignore. Une seule fois par version.
+     */
+    private fun offerUpdate(): Boolean {
+        val r = Updater.available ?: return false
+        if (r.versionCode == offeredVersion || !attached || hiding) return false
+        offeredVersion = r.versionCode
+        mode = Mode.OFFER
+        busy = false
+        island.setState(IslandView.State.UPDATE, "Mise à jour")
+        main.removeCallbacks(resetRunnable)
+        main.postDelayed(resetRunnable, 6000)
+        return true
+    }
+
+    private fun installOffered() {
+        val r = Updater.available ?: return resetToIdle()
+        main.removeCallbacks(resetRunnable)
+        mode = Mode.FEEDBACK
+        island.setState(IslandView.State.TRANSCRIBING)
+        vibrate(VibrationEffect.EFFECT_CLICK)
+        Updater.install(this, r, reopen = false)
+        // L'installation redémarre le service ; si elle échoue, l'île revient au repos.
+        main.postDelayed(resetRunnable, 30_000)
     }
 
     private fun startRecording() {
@@ -756,6 +788,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     // --- Retours visuels ------------------------------------------------------------------------
 
     private fun succeed(label: String) {
+        Updater.checkIfStale(30 * 60 * 1000L)
         mode = Mode.FEEDBACK
         island.setState(IslandView.State.SUCCESS, label)
         vibrate(VibrationEffect.EFFECT_DOUBLE_CLICK)
@@ -783,6 +816,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
     private fun resetToIdle() {
         main.removeCallbacks(resetRunnable)
+        if (mode == Mode.FEEDBACK && island.state == IslandView.State.SUCCESS && offerUpdate()) return
         mode = Mode.IDLE
         busy = false
         if (attached && !hiding) island.setState(IslandView.State.IDLE)

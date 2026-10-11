@@ -10,6 +10,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -26,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -33,6 +35,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -48,10 +51,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.nascozz.dictee.BuildConfig
 import com.nascozz.dictee.update.WhatsNew
 import kotlin.math.abs
@@ -252,34 +257,67 @@ val RedGlow = Brush.radialGradient(listOf(Ink.Red.copy(alpha = 0.22f), Color.Tra
 /** Petit récap des nouveautés, au premier lancement d'une nouvelle version. */
 @Composable
 fun WhatsNewDialog(notes: WhatsNew.Notes, onDismiss: () -> Unit) {
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(CardShape)
-                .background(Ink.Surface)
-                .border(1.dp, Ink.Line, CardShape)
-                .padding(24.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(Ink.Red, pulse = true)
-                Spacer(Modifier.width(10.dp))
-                Eyebrow("Nouveautés · version ${BuildConfig.VERSION_NAME}", color = Ink.RedSoft)
-            }
-            Spacer(Modifier.height(12.dp))
-            Text(notes.title, style = MaterialTheme.typography.titleLarge)
-            if (notes.points.isNotEmpty()) {
-                Spacer(Modifier.height(14.dp))
-                notes.points.take(6).forEach { point ->
-                    Row(Modifier.padding(vertical = 5.dp)) {
-                        Box(Modifier.padding(top = 7.dp)) { StatusDot(Ink.Red.copy(alpha = 0.7f), size = 6.dp) }
-                        Spacer(Modifier.width(12.dp))
-                        Text(point, style = MaterialTheme.typography.bodyMedium, color = Ink.Muted)
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        // Le dialogue vit hors de l'écran principal : couleur de texte par défaut à fixer nous-mêmes.
+        CompositionLocalProvider(LocalContentColor provides Ink.Text) {
+            Column(
+                Modifier
+                    .padding(horizontal = 24.dp)
+                    .fillMaxWidth()
+                    .clip(CardShape)
+                    .background(Ink.Surface)
+                    .border(1.dp, Ink.Line, CardShape)
+                    .padding(start = 22.dp, end = 22.dp, top = 22.dp, bottom = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                // Mini île : point rouge + version, comme la pilule de dictée.
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.Black)
+                        .border(1.dp, Ink.Line, RoundedCornerShape(50))
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StatusDot(Ink.Red, pulse = true)
+                    Spacer(Modifier.width(9.dp))
+                    Text("Nouveautés", style = MaterialTheme.typography.labelLarge, color = Ink.Text)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        BuildConfig.VERSION_NAME,
+                        style = MaterialTheme.typography.labelLarge.merge(TabularNums),
+                        color = Ink.RedSoft,
+                    )
+                }
+                Spacer(Modifier.height(18.dp))
+                Text(
+                    notes.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Ink.Text,
+                    textAlign = TextAlign.Center,
+                )
+                if (notes.points.isNotEmpty()) {
+                    Spacer(Modifier.height(16.dp))
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Ink.SurfaceHigh)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        notes.points.take(6).forEach { point ->
+                            Row {
+                                Box(Modifier.padding(top = 7.dp)) { StatusDot(Ink.Red, size = 6.dp) }
+                                Spacer(Modifier.width(12.dp))
+                                Text(point, style = MaterialTheme.typography.bodyMedium, color = Ink.Muted)
+                            }
+                        }
                     }
                 }
+                Spacer(Modifier.height(20.dp))
+                PillButton("C'est noté", Modifier.fillMaxWidth().height(46.dp), onClick = onDismiss)
             }
-            Spacer(Modifier.height(20.dp))
-            PillButton("C'est noté", Modifier.fillMaxWidth(), onClick = onDismiss)
         }
     }
 }

@@ -47,25 +47,41 @@ object Updater {
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state.asStateFlow()
     private var job: Job? = null
+    private var lastCheckAt = 0L
+
+    /** Version disponible, si la dernière vérification en a trouvé une. */
+    val available: Release? get() = (_state.value as? State.Available)?.release
 
     fun check() {
         if (job?.isActive == true) return
+        val before = _state.value
+        if (before is State.Downloading || before is State.Installing) return
         job = Graph.appScope.launch {
-            _state.value = State.Checking
+            // Pas de « Vérification… » si une version est déjà annoncée : la bannière ne clignote pas.
+            if (before !is State.Available) _state.value = State.Checking
             _state.value = try {
                 val r = fetchLatest()
+                lastCheckAt = System.currentTimeMillis()
                 if (r != null && r.versionCode > BuildConfig.VERSION_CODE) State.Available(r) else State.UpToDate
             } catch (e: Exception) {
-                State.Failed("Impossible de vérifier les mises à jour")
+                if (before is State.Available) before else State.Failed("Impossible de vérifier les mises à jour")
             }
         }
     }
 
-    fun install(context: Context, release: Release) {
+    /** Vérifie seulement si la dernière vérification date de plus de [maxAgeMs]. */
+    fun checkIfStale(maxAgeMs: Long) {
+        if (System.currentTimeMillis() - lastCheckAt > maxAgeMs) check()
+    }
+
+    /**
+     * [reopen] : rouvrir Dictée après l'installation. Vrai depuis l'écran ; faux depuis l'île,
+     * pour ne pas te sortir de l'appli où tu écrivais.
+     */
+    fun install(context: Context, release: Release, reopen: Boolean = true) {
         if (job?.isActive == true) return
         val app = context.applicationContext
-        // Lancée depuis l'écran : on rouvrira Dictée après l'installation.
-        Relauncher.request(app)
+        if (reopen) Relauncher.request(app)
         WhatsNew.remember(app, release.versionCode, release.notes)
         job = Graph.appScope.launch {
             try {

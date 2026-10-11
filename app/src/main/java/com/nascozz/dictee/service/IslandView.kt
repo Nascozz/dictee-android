@@ -44,7 +44,8 @@ class IslandView(context: Context) : View(context) {
     }
 
     /** LIVE = enregistrement avec sous-titres en direct : l'île s'agrandit vers le bas. */
-    enum class State { HIDDEN, IDLE, RECORDING, LIVE, TRANSCRIBING, SUCCESS, ERROR }
+    /** UPDATE = « une mise à jour est disponible », proposée après une dictée. */
+    enum class State { HIDDEN, IDLE, RECORDING, LIVE, TRANSCRIBING, SUCCESS, ERROR, UPDATE }
 
     var listener: Listener? = null
 
@@ -146,6 +147,7 @@ class IslandView(context: Context) : View(context) {
         State.RECORDING -> hole + 188 * dp
         State.LIVE -> liveWidth()
         State.TRANSCRIBING, State.SUCCESS, State.ERROR -> hole + 128 * dp
+        State.UPDATE -> hole + 160 * dp
     }
 
     /**
@@ -291,6 +293,10 @@ class IslandView(context: Context) : View(context) {
                     drawBang(canvas, lc, cy, a)
                     drawLabel(canvas, rc, cy, label ?: "Erreur", RED_SOFT, a)
                 }
+                State.UPDATE -> {
+                    drawDownArrow(canvas, lc, cy, a)
+                    drawLabel(canvas, rc, cy, label ?: "Mise à jour", Color.WHITE, a)
+                }
                 State.HIDDEN -> Unit
             }
         }
@@ -413,6 +419,14 @@ class IslandView(context: Context) : View(context) {
         stroke.color = GREEN
         stroke.alpha = (255 * a).toInt()
         canvas.drawPath(checkSeg, stroke)
+    }
+
+    private fun drawDownArrow(canvas: Canvas, x: Float, y: Float, a: Float) {
+        stroke.color = RED
+        stroke.alpha = (255 * a).toInt()
+        canvas.drawLine(x, y - 7 * dp, x, y + 5 * dp, stroke)
+        canvas.drawLine(x - 5 * dp, y, x, y + 5 * dp, stroke)
+        canvas.drawLine(x + 5 * dp, y, x, y + 5 * dp, stroke)
     }
 
     private fun drawBang(canvas: Canvas, x: Float, y: Float, a: Float) {
