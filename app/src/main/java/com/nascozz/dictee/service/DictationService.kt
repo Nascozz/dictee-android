@@ -9,7 +9,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
-import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -19,6 +18,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
 import android.view.Gravity
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -37,24 +37,27 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * Service d'accessibilité : repère le champ de texte actif, y accroche la bulle,
- * enregistre la voix, envoie l'audio au fournisseur choisi et insère le texte.
+ * Service d'accessibilité : quand un champ de texte est actif (clavier ouvert), une pilule noire
+ * sort de la caméra frontale. On y enregistre la voix, on l'envoie au fournisseur choisi
+ * et on insère le texte au curseur.
  */
-class DictationService : AccessibilityService(), BubbleView.Listener {
+class DictationService : AccessibilityService(), IslandView.Listener {
 
     private enum class Mode { IDLE, RECORDING, TRANSCRIBING, FEEDBACK }
+
+    /** Position et taille du trou de la caméra, en pixels écran. */
+    private data class Hole(val cx: Int, val cy: Int, val diameter: Int)
 
     private val main = Handler(Looper.getMainLooper())
     private val scope = MainScope()
     private lateinit var wm: WindowManager
-    private lateinit var bubble: BubbleView
+    private lateinit var island: IslandView
     private lateinit var params: WindowManager.LayoutParams
     private val recorder by lazy { Recorder(this) }
 
     private var attached = false
     private var hiding = false
-    private var anchorX = 0
-    private var anchorY = 0
+    private var hole = Hole(0, 0, 0)
     private var target: AccessibilityNodeInfo? = null
     private var mode = Mode.IDLE
     private var transcribeJob: Job? = null
@@ -62,21 +65,26 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
 
     override fun onServiceConnected() {
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        bubble = BubbleView(this).also { it.listener = this }
+        island = IslandView(this).also {
+            it.listener = this
+            it.onWidthNeeded = ::resizeWindow
+        }
         params = WindowManager.LayoutParams(
-            bubble.collapsedSize,
-            bubble.collapsedSize,
+            0, 0,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             windowAnimations = 0
-            if (Build.VERSION.SDK_INT >= 30) {
-                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            } else {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
         scope.launch {
@@ -106,25 +114,40 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
 
     private val refresh = Runnable {
         refreshPending = false
-        refreshBubble()
+        refreshIsland()
     }
 
-    private fun refreshBubble() {
+    private fun refreshIsland() {
         if (mode != Mode.IDLE) return
         if (!Graph.settings.current.bubbleEnabled) return hide()
         val node = findFocusedEditable()
         if (node == null || !keyboardVisible()) return hide()
-        val r = Rect()
-        node.getBoundsInScreen(r)
-        if (r.isEmpty) return hide()
         target = node
-        show(r)
+        show()
     }
 
     private fun findFocusedEditable(): AccessibilityNodeInfo? {
-        val n = runCatching { findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull() ?: return null
-        if (!n.isEditable || n.isPassword || !n.isVisibleToUser) return null
-        return n
+        val focus = runCatching { findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
+        val node = when {
+            focus == null -> null
+            focus.isEditable -> focus
+            // Compose & co : le focus signalé est la vue hôte, le vrai champ est un de ses descendants.
+            else -> target?.takeIf { runCatching { it.refresh() && it.isFocused }.getOrDefault(false) }
+                ?: searchFocusedEditable(focus)
+        }
+        return node?.takeUnless { it.isPassword }
+    }
+
+    /** Parcours en largeur, borné pour rester rapide même sur des écrans très chargés. */
+    private fun searchFocusedEditable(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+        var budget = 600
+        while (queue.isNotEmpty() && budget-- > 0) {
+            val n = queue.removeFirst()
+            if (n.isEditable && n.isFocused) return n
+            for (i in 0 until n.childCount) n.getChild(i)?.let(queue::addLast)
+        }
+        return null
     }
 
     private fun keyboardVisible(): Boolean {
@@ -133,72 +156,63 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
         return ws.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
     }
 
-    // --- Fenêtre de la bulle -------------------------------------------------------------------
+    // --- Fenêtre de l'île -----------------------------------------------------------------------
 
-    private fun show(field: Rect) {
-        val (x, y) = anchorFor(field)
-        anchorX = x
-        anchorY = y
-        params.width = bubble.collapsedSize
-        params.x = x
-        params.y = y
-        if (!attached) {
-            runCatching { wm.addView(bubble, params) }.onSuccess {
-                attached = true
-                hiding = false
-                bubble.popIn()
-            }
-        } else {
-            if (hiding) {
-                hiding = false
-                bubble.popIn()
-            }
-            runCatching { wm.updateViewLayout(bubble, params) }
+    private fun show() {
+        if (attached && !hiding) return
+        if (hiding) {
+            hiding = false
+            island.setState(IslandView.State.IDLE)
+            return
+        }
+        hole = findHole()
+        island.setHole(hole.diameter.toFloat())
+        params.height = island.windowHeight
+        params.y = hole.cy - params.height / 2
+        resizeWindow(island.windowWidthFor(hole.diameter.toFloat()), update = false)
+        runCatching { wm.addView(island, params) }.onSuccess {
+            attached = true
+            island.setState(IslandView.State.IDLE)
         }
     }
 
     private fun hide() {
         if (!attached || hiding) return
         hiding = true
-        bubble.popOut {
+        island.setState(IslandView.State.HIDDEN) {
             if (hiding) {
-                runCatching { wm.removeViewImmediate(bubble) }
+                runCatching { wm.removeViewImmediate(island) }
                 attached = false
                 hiding = false
             }
         }
     }
 
-    /** Place la bulle au-dessus du coin droit du champ (ou dedans pour les grandes zones de texte). */
-    private fun anchorFor(field: Rect): Pair<Int, Int> {
-        val size = bubble.collapsedSize
-        val m = bubble.margin
-        val (sw, sh) = screenSize()
-        val gap = dp(6)
-        var x = field.right - dp(4) + m - size
-        val y = when {
-            field.height() > dp(180) -> field.top + dp(8) - m
-            field.top - size + m + gap >= dp(32) -> field.top + gap + m - size
-            else -> field.bottom - gap - m
-        }
-        x = x.coerceIn(0, sw - size)
-        return x to y.coerceIn(0, sh - size)
+    /** La fenêtre s'adapte à la taille de la pilule tout en restant centrée sur la caméra. */
+    private fun resizeWindow(width: Int, update: Boolean = true) {
+        params.width = width
+        params.x = hole.cx - width / 2
+        if (update && attached) runCatching { wm.updateViewLayout(island, params) }
     }
 
-    private fun setExpanded(open: Boolean) {
-        if (!attached) return
-        if (open) {
-            params.width = bubble.expandedWidth
-            params.x = (anchorX + bubble.collapsedSize - bubble.expandedWidth).coerceAtLeast(0)
-            runCatching { wm.updateViewLayout(bubble, params) }
-            bubble.expand(true)
-        } else if (bubble.isExpanded) {
-            bubble.expand(false) {
-                params.width = bubble.collapsedSize
-                params.x = anchorX
-                if (attached) runCatching { wm.updateViewLayout(bubble, params) }
+    private fun findHole(): Hole {
+        val cutout = if (Build.VERSION.SDK_INT >= 30) {
+            wm.currentWindowMetrics.windowInsets.displayCutout
+        } else {
+            @Suppress("DEPRECATION") wm.defaultDisplay.cutout
+        }
+        val r = cutout?.boundingRectTop
+        if (r != null && !r.isEmpty) {
+            return if (r.width() > r.height() * 1.6f) {
+                // Encoche large : on se centre dessus.
+                Hole(r.centerX(), r.centerY(), r.height())
+            } else {
+                // Poinçon (Pixel, Galaxy…) : le rectangle peut descendre du haut de l'écran jusqu'au trou.
+                Hole(r.centerX(), r.bottom - r.width() / 2, r.width())
             }
         }
+        // Pas de caméra dans l'écran : l'île naît au milieu de la barre d'état.
+        return Hole(screenWidth() / 2, statusBarHeight() / 2, 0)
     }
 
     // --- Dictée ---------------------------------------------------------------------------------
@@ -218,12 +232,10 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
                 main.removeCallbacks(autoStop)
                 recorder.cancel()
                 vibrate(VibrationEffect.EFFECT_TICK)
-                toast("Dictée annulée")
                 resetToIdle()
             }
             Mode.TRANSCRIBING -> {
                 transcribeJob?.cancel()
-                toast("Dictée annulée")
                 resetToIdle()
             }
             else -> openApp()
@@ -234,25 +246,24 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
         main.removeCallbacks(resetRunnable)
         val s = Graph.settings.current
         if (!s.hasKey(s.provider)) {
-            fail("Ajoute ta clé ${s.provider.label} dans Dictée")
+            fail("Ajoute ta clé ${s.provider.label} dans Dictée", "Clé API")
             openApp()
             return
         }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            fail("Autorise le micro dans Dictée")
+            fail("Autorise le micro dans Dictée", "Micro")
             openApp()
             return
         }
         findFocusedEditable()?.let { target = it }
         if (!recorder.start()) {
-            fail("Micro indisponible")
+            fail("Micro indisponible", "Micro")
             return
         }
         mode = Mode.RECORDING
         busy = true
         vibrate(VibrationEffect.EFFECT_CLICK)
-        bubble.setState(BubbleView.State.RECORDING)
-        setExpanded(true)
+        island.setState(IslandView.State.RECORDING)
         main.post(levelTick)
         main.postDelayed(autoStop, MAX_RECORDING_MS)
     }
@@ -260,7 +271,7 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
     private val levelTick = object : Runnable {
         override fun run() {
             if (mode != Mode.RECORDING) return
-            bubble.addLevel(recorder.level())
+            island.addLevel(recorder.level())
             main.postDelayed(this, 55)
         }
     }
@@ -271,14 +282,13 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
         main.removeCallbacks(levelTick)
         main.removeCallbacks(autoStop)
         val result = recorder.stop()
-        setExpanded(false)
         if (result == null) {
-            fail("Trop court : touche, parle, puis touche à nouveau")
+            fail("Trop court : touche, parle, puis touche à nouveau", "Trop court")
             return
         }
         val (file, duration) = result
         mode = Mode.TRANSCRIBING
-        bubble.setState(BubbleView.State.TRANSCRIBING)
+        island.setState(IslandView.State.TRANSCRIBING)
         vibrate(VibrationEffect.EFFECT_TICK)
 
         val s = Graph.settings.current
@@ -295,11 +305,14 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
             try {
                 val text = Transcriber.transcribe(file, request)
                 if (text.isBlank()) {
-                    fail("Je n'ai rien entendu")
+                    fail("Je n'ai rien entendu", "Rien entendu")
                 } else {
                     val inserted = insertText(text)
                     Graph.history.add(text, provider.label, request.model, duration)
-                    succeed(if (inserted) null else "Texte copié : colle-le où tu veux")
+                    if (inserted) succeed("Inséré") else {
+                        toast("Texte copié : colle-le où tu veux")
+                        succeed("Copié")
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -313,15 +326,29 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
         }
     }
 
+    /**
+     * Insère le texte au curseur. Renvoie false si on a dû se contenter du presse-papiers.
+     *
+     * Beaucoup d'applis (Messages, WhatsApp, champs Compose…) renvoient le texte grisé d'aide
+     * (« Message ») comme si c'était le contenu du champ. On ne réécrit donc tout le champ que
+     * quand on est sûr de son contenu ; dans le doute, on colle au curseur, ce qui est toujours juste.
+     */
     private fun insertText(raw: String): Boolean {
         val text = raw.trim()
         val node = target?.takeIf { runCatching { it.refresh() }.getOrDefault(false) } ?: findFocusedEditable()
-        if (node == null) return copyToClipboard(text)
+            ?: return copyToClipboard(text)
 
-        val showingHint = Build.VERSION.SDK_INT >= 26 && node.isShowingHintText
-        val existing = if (showingHint) "" else node.text?.toString().orEmpty()
+        val rawText = node.text?.toString().orEmpty()
+        val hint = node.hintText?.toString()
+        val showingHint = node.isShowingHintText || (hint != null && rawText == hint)
+        val existing = if (showingHint) "" else rawText
         var start = node.textSelectionStart
         var end = node.textSelectionEnd
+
+        // Contenu incertain : texte présent mais curseur absent ou tout au début (souvent un placeholder).
+        val uncertain = !showingHint && existing.isNotEmpty() && (start <= 0 && end <= 0)
+        if (uncertain) return paste(node, text)
+
         if (start < 0 || end < 0 || start > existing.length) {
             start = existing.length
             end = existing.length
@@ -352,10 +379,12 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
             )
             return true
         }
-        // Certaines applis refusent SET_TEXT : on passe par le presse-papiers + coller.
-        clipboard().setPrimaryClip(ClipData.newPlainText("Dictée", insert))
-        if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) return true
-        return false
+        return paste(node, insert)
+    }
+
+    private fun paste(node: AccessibilityNodeInfo, text: String): Boolean {
+        clipboard().setPrimaryClip(ClipData.newPlainText("Dictée", text))
+        return node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
     }
 
     private fun copyToClipboard(text: String): Boolean {
@@ -365,36 +394,35 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
 
     // --- Retours visuels ------------------------------------------------------------------------
 
-    private fun succeed(note: String?) {
+    private fun succeed(label: String) {
         mode = Mode.FEEDBACK
-        bubble.setState(BubbleView.State.SUCCESS)
+        island.setState(IslandView.State.SUCCESS, label)
         vibrate(VibrationEffect.EFFECT_DOUBLE_CLICK)
-        note?.let(::toast)
-        main.postDelayed(resetRunnable, 900)
+        main.postDelayed(resetRunnable, 1100)
     }
 
-    private fun fail(message: String) {
+    private fun fail(message: String, label: String = "Erreur") {
         if (mode == Mode.RECORDING) recorder.cancel()
         mode = Mode.FEEDBACK
         busy = true
-        setExpanded(false)
-        bubble.setState(BubbleView.State.ERROR)
-        bubble.shake()
+        if (attached) {
+            island.setState(IslandView.State.ERROR, label)
+            island.shake()
+        }
         vibrate(VibrationEffect.EFFECT_HEAVY_CLICK)
         toast(message)
         main.removeCallbacks(resetRunnable)
-        main.postDelayed(resetRunnable, 1800)
+        main.postDelayed(resetRunnable, 2000)
     }
 
     private val resetRunnable = Runnable { resetToIdle() }
 
     private fun resetToIdle() {
         main.removeCallbacks(resetRunnable)
-        setExpanded(false)
         mode = Mode.IDLE
         busy = false
-        bubble.setState(BubbleView.State.IDLE)
-        refreshBubble()
+        if (attached && !hiding) island.setState(IslandView.State.IDLE)
+        refreshIsland()
     }
 
     private fun vibrate(effect: Int) {
@@ -417,14 +445,17 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
         }
     }
 
-    private fun screenSize(): Pair<Int, Int> =
-        if (Build.VERSION.SDK_INT >= 30) {
-            wm.currentWindowMetrics.bounds.let { it.width() to it.height() }
-        } else {
-            resources.displayMetrics.let { it.widthPixels to it.heightPixels }
-        }
+    private fun screenWidth(): Int =
+        if (Build.VERSION.SDK_INT >= 30) wm.currentWindowMetrics.bounds.width() else resources.displayMetrics.widthPixels
 
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun statusBarHeight(): Int {
+        if (Build.VERSION.SDK_INT >= 30) {
+            val top = wm.currentWindowMetrics.windowInsets.getInsets(WindowInsets.Type.statusBars()).top
+            if (top > 0) return top
+        }
+        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else (24 * resources.displayMetrics.density).toInt()
+    }
 
     override fun onInterrupt() = Unit
 
@@ -432,7 +463,7 @@ class DictationService : AccessibilityService(), BubbleView.Listener {
         main.removeCallbacksAndMessages(null)
         recorder.cancel()
         scope.cancel()
-        if (attached) runCatching { wm.removeViewImmediate(bubble) }
+        if (attached) runCatching { wm.removeViewImmediate(island) }
         attached = false
         busy = false
         super.onDestroy()

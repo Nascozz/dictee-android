@@ -171,7 +171,7 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
         SectionCard(title = "Essaie ici") {
             var text by remember { mutableStateOf("") }
             Text(
-                "Touche le champ : la bulle apparaît au-dessus, à droite. Touche-la, parle, puis touche-la encore. " +
+                "Touche le champ : une pilule sort de la caméra, en haut. Touche-la, parle, puis touche-la encore. " +
                     "Appui long pour annuler.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
