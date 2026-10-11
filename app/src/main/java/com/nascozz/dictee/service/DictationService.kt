@@ -74,7 +74,14 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private var fieldWritePending = false
 
     /** Champ qu'on peut réécrire en direct : on garde ce qu'il y avait avant et après le curseur. */
-    private class LiveField(val node: AccessibilityNodeInfo, val original: String, val prefix: String, val suffix: String)
+    private class LiveField(
+        val node: AccessibilityNodeInfo,
+        val original: String,
+        val prefix: String,
+        val suffix: String,
+        /** Un espace a été collé pour rendre le champ lisible : à retirer si la dictée n'aboutit pas. */
+        val primed: Boolean = false,
+    )
 
     override fun onServiceConnected() {
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -441,11 +448,28 @@ class DictationService : AccessibilityService(), IslandView.Listener {
      */
     private fun prepareLiveField(): LiveField? {
         val node = target?.takeIf { runCatching { it.refresh() }.getOrDefault(false) } ?: findFocusedEditable() ?: return null
-        val f = readField(node) ?: return null
+        val known = readField(node)
+        val f = known ?: primeField(node) ?: return null
         var prefix = f.text.substring(0, f.start)
         val before = prefix.lastOrNull()
         if (Graph.settings.current.autoSpace && before != null && !before.isWhitespace() && before !in "([{\"'«/") prefix += " "
-        return LiveField(node, f.text, prefix, f.text.substring(f.end))
+        return LiveField(node, f.text, prefix, f.text.substring(f.end), primed = known == null)
+    }
+
+    /**
+     * Dernier recours quand le contenu est incertain (ex. WhatsApp vide) : on colle un espace au curseur.
+     * Le champ annonce alors son vrai contenu ; on repère notre espace et on le retire du contenu connu,
+     * le premier mot dicté le remplacera.
+     */
+    private fun primeField(node: AccessibilityNodeInfo): FieldState? {
+        clipboard().setPrimaryClip(ClipData.newPlainText("Dictée", " "))
+        if (!node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) return null
+        runCatching { node.refresh() }
+        val text = node.text?.toString().orEmpty()
+        val cursor = node.textSelectionStart
+        if (cursor <= 0 || cursor > text.length || text[cursor - 1] != ' ') return null
+        val clean = text.removeRange(cursor - 1, cursor)
+        return FieldState(clean, cursor - 1, cursor - 1)
     }
 
     /** Contenu réel d'un champ et position du curseur. */
@@ -556,7 +580,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         live = null
         val field = liveField
         liveField = null
-        if (restoreField && field != null && liveText.isNotEmpty()) {
+        if (field != null && ((restoreField && liveText.isNotEmpty()) || field.primed)) {
             setFieldText(field.node, field.original, field.prefix.length.coerceAtMost(field.original.length))
         }
     }
