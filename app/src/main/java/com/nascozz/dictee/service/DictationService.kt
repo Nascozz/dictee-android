@@ -79,6 +79,13 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private var liveWritten = false
     /** Dernier contenu écrit dans le champ, pour ne pas le réécrire pour rien. */
     private var lastFieldWrite: String? = null
+    /** Longueur du texte brut déjà écrit dans le champ. */
+    private var writtenRawLen = 0
+    /**
+     * Après une retouche au clavier, le champ (préfixe compris) contient ta version : seul le texte brut
+     * reçu après [liveRawBase] reste à écrire, à la suite.
+     */
+    private var liveRawBase = 0
     private var lastDeltaAt = 0L
 
     // Copie locale de l'audio temps réel, pour pouvoir réessayer si la transcription échoue.
@@ -377,6 +384,8 @@ class DictationService : AccessibilityService(), IslandView.Listener {
         liveText.setLength(0)
         liveWritten = false
         lastFieldWrite = null
+        writtenRawLen = 0
+        liveRawBase = 0
         fieldWritePending = false
         main.removeCallbacks(writeField)
         liveField = prepareLiveField()
@@ -452,6 +461,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             val text = TextFormatter.format(raw, Graph.settings.current.formatOptions).trim()
             Graph.usage.record(MistralRealtime.MODEL, liveDurationMs)
             closePcm()?.delete()
+            if (liveWritten) followUserEdits()
             val field = liveField
             liveField = null
             if (text.isEmpty()) {
@@ -459,7 +469,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
                 fail("Je n'ai rien entendu", "Rien entendu")
                 return
             }
-            var finalInField = text
+            var finalInField = if (field != null && liveRawBase > 0) liveTail(field).trimEnd() else text
             if (field != null && Graph.settings.current.autoSpace) {
                 val after = field.suffix.firstOrNull()
                 if (after != null && !after.isWhitespace() && after !in ".,;:!?)]}»") finalInField = "$finalInField "
@@ -621,13 +631,17 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
     private val writeField = Runnable {
         fieldWritePending = false
+        if (liveField == null) return@Runnable
+        followUserEdits()
         val field = liveField ?: return@Runnable
-        val text = liveFormatted().trimStart()
+        val rawLen = liveText.length
+        val text = liveTail(field)
         val full = field.prefix + text + field.suffix
         if (full == lastFieldWrite) return@Runnable
         if (setFieldText(field.node, full, field.prefix.length + text.length)) {
             liveWritten = true
             lastFieldWrite = full
+            writtenRawLen = rawLen
         } else if (!liveWritten) {
             // L'appli refuse l'écriture directe : on bascule sur les sous-titres dans l'île.
             liveField = null
@@ -639,6 +653,40 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     }
 
     private fun liveFormatted() = TextFormatter.format(liveText.toString(), Graph.settings.current.formatOptions)
+
+    /** Ce qu'il reste à écrire après le préfixe : tout le direct, ou seulement la suite après une retouche. */
+    private fun liveTail(field: LiveField): String {
+        if (liveRawBase == 0) return liveFormatted().trimStart()
+        val raw = liveText.substring(liveRawBase.coerceAtMost(liveText.length))
+        var t = TextFormatter.format(raw, Graph.settings.current.formatOptions).trimStart()
+        if (t.isEmpty()) return ""
+        val before = field.prefix.lastOrNull()
+        if (raw.trimStart().firstOrNull() == TextFormatter.PAUSE) {
+            // Une pause juste après ta retouche : on passe à la ligne.
+            val dot = if (before != null && before.isLetterOrDigit() && !Graph.settings.current.minimalPunctuation) "." else ""
+            return dot + "\n" + t.replaceFirstChar { it.uppercaseChar() }
+        }
+        if (before != null && !before.isWhitespace()) t = " $t"
+        return t
+    }
+
+    /**
+     * Si tu as modifié le champ au clavier depuis notre dernière écriture, on adopte ta version :
+     * tout ce qui est avant la fin de la dictée devient le nouveau préfixe, et on écrira la suite après.
+     */
+    private fun followUserEdits() {
+        val field = liveField ?: return
+        val last = lastFieldWrite ?: return
+        if (!runCatching { field.node.refresh() }.getOrDefault(false)) return
+        val shown = field.node.text?.toString().orEmpty()
+        val current = if (field.node.isShowingHintText || shown == field.node.hintText?.toString()) "" else shown
+        if (current == last) return
+        val keepsSuffix = field.suffix.isNotEmpty() && current.endsWith(field.suffix)
+        val end = if (keepsSuffix) current.length - field.suffix.length else current.length
+        liveField = LiveField(field.node, field.original, current.substring(0, end), if (keepsSuffix) field.suffix else "", field.primed)
+        liveRawBase = writtenRawLen
+        lastFieldWrite = current
+    }
 
     /** Remplace le texte direct par la version finale ; une seconde tentative avec un nœud rafraîchi. */
     private fun writeFinal(field: LiveField, finalText: String): Boolean {
