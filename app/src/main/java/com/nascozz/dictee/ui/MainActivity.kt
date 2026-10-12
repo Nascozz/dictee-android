@@ -45,14 +45,14 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
-        setContent { DicteeTheme { AppRoot() } }
+        setContent { DicteeTheme { ProvideAnimationClock { AppRoot() } } }
         Relauncher.done(this)
     }
 
     override fun onResume() {
         super.onResume()
         // À chaque retour dans l'app : y a-t-il une nouvelle version ? (au plus toutes les 30 s)
-        Updater.checkIfStale(30 * 1000L)
+        Updater.checkIfStale(this, 30 * 1000L)
     }
 }
 

@@ -34,7 +34,12 @@ class UpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     companion object {
         fun schedule(context: Context) {
             val request = PeriodicWorkRequestBuilder<UpdateWorker>(4, TimeUnit.HOURS)
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .setRequiresBatteryNotLow(true)
+                        .build()
+                )
                 .build()
             WorkManager.getInstance(context)
                 .enqueueUniquePeriodicWork("auto-update", ExistingPeriodicWorkPolicy.KEEP, request)

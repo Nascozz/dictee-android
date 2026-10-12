@@ -4,9 +4,14 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.net.ConnectivityManager
 import android.os.Build
+import android.os.PowerManager
 import com.nascozz.dictee.BuildConfig
 import com.nascozz.dictee.Graph
+import com.nascozz.dictee.Http
+import java.io.File
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,11 +19,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
-import java.io.File
-import java.util.concurrent.TimeUnit
 
 /**
  * Mises à jour via GitHub Releases : chaque push sur `main` publie un APK signé,
@@ -39,7 +41,7 @@ object Updater {
         data class Failed(val message: String) : State
     }
 
-    private val client = OkHttpClient.Builder()
+    private val client = Http.base.newBuilder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
@@ -69,9 +71,17 @@ object Updater {
         }
     }
 
-    /** Vérifie seulement si la dernière vérification date de plus de [maxAgeMs]. */
-    fun checkIfStale(maxAgeMs: Long) {
-        if (System.currentTimeMillis() - lastCheckAt > maxAgeMs) check()
+    /**
+     * Vérifie seulement si la dernière vérification date de plus de [maxAgeMs], et jamais en mode
+     * économie de batterie ni sans réseau (inutile de réveiller la radio pour rien).
+     */
+    fun checkIfStale(context: Context, maxAgeMs: Long) {
+        if (System.currentTimeMillis() - lastCheckAt <= maxAgeMs) return
+        val power = context.getSystemService(PowerManager::class.java)
+        if (power?.isPowerSaveMode == true) return
+        val net = context.getSystemService(ConnectivityManager::class.java)
+        if (net?.activeNetwork == null) return
+        check()
     }
 
     /**

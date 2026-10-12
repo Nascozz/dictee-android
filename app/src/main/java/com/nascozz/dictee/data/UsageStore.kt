@@ -42,7 +42,7 @@ class UsageStore(context: Context) {
             models.forEach { (m, u) -> d.put(m, JSONObject().put("s", u.seconds).put("n", u.count)) }
             root.put(date, d)
         }
-        runCatching { file.writeText(root.toString()) }
+        DiskWriter.write(file, root.toString())
     }
 
     private fun read(): Map<String, Map<String, ModelUsage>> = runCatching {

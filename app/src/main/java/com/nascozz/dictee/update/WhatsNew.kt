@@ -2,12 +2,12 @@ package com.nascozz.dictee.update
 
 import android.content.Context
 import com.nascozz.dictee.BuildConfig
+import com.nascozz.dictee.Http
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * « Nouveautés » : au premier lancement d'une nouvelle version, un petit récap de ce qui a changé.
@@ -21,7 +21,7 @@ object WhatsNew {
     private const val NOTES_CODE = "notes_code"
     private const val NOTES = "notes"
 
-    private val client = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
+    private val client = Http.base.newBuilder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
 
     /** Appelé juste avant d'installer une mise à jour : on garde ses notes pour après. */
     fun remember(context: Context, versionCode: Int, notes: String) {

@@ -309,7 +309,8 @@ class IslandView(context: Context) : View(context) {
                 State.HIDDEN -> Unit
             }
         }
-        if (state in RECORDING_STATES || state == State.TRANSCRIBING) postInvalidateOnAnimation()
+        // Chrono, onde et spinner : 30 images/s suffisent (au lieu de 60 à 120 selon l'écran).
+        if (state in RECORDING_STATES || state == State.TRANSCRIBING) postInvalidateDelayed(FRAME_MS)
     }
 
     /** Les 3 dernières lignes du texte en direct, avec un curseur rouge qui clignote. */
@@ -487,6 +488,7 @@ class IslandView(context: Context) : View(context) {
     }
 
     private companion object {
+        const val FRAME_MS = 33L
         val RECORDING_STATES = setOf(State.RECORDING, State.LIVE)
         val RED = 0xFFFF4D6D.toInt()
         val RED_SOFT = 0xFFFF7A8E.toInt()

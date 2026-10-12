@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Économie de batterie : on n'écoute que les événements rares qui comptent pour l'île
+    (focus, clic, fenêtres — dont l'ouverture du clavier). Pas de « contenu modifié », « défilement »
+    ou « sélection » : ils arrivent des dizaines de fois par seconde dans toutes les applis.
+-->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeViewFocused|typeViewClicked|typeWindowStateChanged|typeWindowsChanged|typeViewScrolled|typeWindowContentChanged|typeViewTextSelectionChanged"
+    android:accessibilityEventTypes="typeViewFocused|typeViewClicked|typeWindowStateChanged|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
     android:description="@string/a11y_description"
-    android:notificationTimeout="40"
+    android:notificationTimeout="100"
     android:settingsActivity="com.nascozz.dictee.ui.MainActivity" />

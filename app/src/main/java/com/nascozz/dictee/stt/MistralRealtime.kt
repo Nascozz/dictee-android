@@ -3,13 +3,13 @@ package com.nascozz.dictee.stt
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
-import okhttp3.OkHttpClient
+import com.nascozz.dictee.Http
+import java.util.concurrent.TimeUnit
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * Transcription en temps réel avec Voxtral Realtime (Mistral), via WebSocket.
@@ -180,7 +180,7 @@ class MistralRealtime(
         private const val SAMPLE_RATE = 16_000
         private const val DONE_TIMEOUT_MS = 8_000L
 
-        private val client = OkHttpClient.Builder()
+        private val client = Http.base.newBuilder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .pingInterval(20, TimeUnit.SECONDS)

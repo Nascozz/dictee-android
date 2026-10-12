@@ -1,11 +1,6 @@
 package com.nascozz.dictee.ui
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import android.os.SystemClock
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -37,12 +32,17 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.LongState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameMillis
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -51,6 +51,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -58,10 +59,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.nascozz.dictee.BuildConfig
 import com.nascozz.dictee.update.WhatsNew
 import kotlin.math.abs
 import kotlin.math.sin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 
 val CardShape = RoundedCornerShape(28.dp)
 
@@ -134,11 +140,19 @@ fun GhostButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit
 /** Point de statut, façon point d'enregistrement ; il « respire » quand [pulse] est vrai. */
 @Composable
 fun StatusDot(color: Color, size: Dp = 8.dp, pulse: Boolean = false) {
-    val alpha = if (pulse) {
-        val t = rememberInfiniteTransition(label = "dot")
-        t.animateFloat(0.45f, 1f, infiniteRepeatable(tween(760), RepeatMode.Reverse), label = "a").value
-    } else 1f
-    Box(Modifier.size(size).alpha(alpha).clip(CircleShape).background(color))
+    if (!pulse) {
+        Box(Modifier.size(size).clip(CircleShape).background(color))
+        return
+    }
+    val now = animationClock()
+    // Lu dans graphicsLayer : la pulsation ne fait que retoucher le calque, sans recomposer l'écran.
+    Box(
+        Modifier
+            .size(size)
+            .graphicsLayer { alpha = 0.45f + 0.55f * abs(sin(now.longValue / 485.0)).toFloat() }
+            .clip(CircleShape)
+            .background(color)
+    )
 }
 
 @Composable
@@ -203,13 +217,9 @@ fun inkChipBorder(selected: Boolean) = FilterChipDefaults.filterChipBorder(
  */
 @Composable
 fun IslandDemo(modifier: Modifier = Modifier) {
-    var now by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(Unit) {
-        val start = withFrameMillis { it }
-        while (true) withFrameMillis { now = it - start }
-    }
-    val seconds = (now / 1000) % 60
-    val pulse = 0.5f + 0.5f * abs(sin(now / 380.0)).toFloat()
+    val now = animationClock()
+    // Le chrono ne recompose qu'une fois par seconde ; le point et l'onde ne font que se redessiner.
+    val seconds by remember { derivedStateOf { (now.longValue / 1000) % 60 } }
 
     Row(
         modifier
@@ -220,7 +230,13 @@ fun IslandDemo(modifier: Modifier = Modifier) {
             .padding(horizontal = 22.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(9.dp).alpha(pulse).clip(CircleShape).background(Ink.Red))
+        Box(
+            Modifier
+                .size(9.dp)
+                .graphicsLayer { alpha = 0.5f + 0.5f * abs(sin(now.longValue / 380.0)).toFloat() }
+                .clip(CircleShape)
+                .background(Ink.Red)
+        )
         Spacer(Modifier.width(9.dp))
         Text(
             "0:%02d".format(seconds),
@@ -231,11 +247,11 @@ fun IslandDemo(modifier: Modifier = Modifier) {
         )
         Spacer(Modifier.width(26.dp))
         Canvas(Modifier.width(120.dp).height(26.dp)) {
+            val t = now.longValue / 1000.0
             val n = 22
             val step = size.width / n
             for (i in 0 until n) {
                 // Une onde « parlée » : plusieurs sinus superposés qui défilent.
-                val t = now / 1000.0
                 val v = abs(sin(t * 5.1 + i * 0.55) * 0.55 + sin(t * 2.3 + i * 0.27) * 0.45).toFloat()
                 val fade = 0.4f + 0.6f * (i / (n - 1f))
                 val h = (0.12f + v * 0.88f) * size.height
@@ -250,6 +266,52 @@ fun IslandDemo(modifier: Modifier = Modifier) {
             }
         }
     }
+}
+
+// --- Horloge d'animation partagée ----------------------------------------------------------------
+
+/**
+ * Une seule horloge pour toutes les animations décoratives (démo de l'île, points qui respirent) :
+ * 30 images/s au lieu de la fréquence de l'écran (60 à 120), toutes synchronisées sur la même image,
+ * et à l'arrêt quand aucune animation n'est affichée ou que l'app n'est pas visible.
+ */
+class AnimationClock {
+    val now = mutableLongStateOf(0L)
+    internal var users by mutableIntStateOf(0)
+}
+
+val LocalAnimationClock = staticCompositionLocalOf { AnimationClock() }
+
+private const val CLOCK_FRAME_MS = 33L
+
+@Composable
+fun ProvideAnimationClock(content: @Composable () -> Unit) {
+    val clock = remember { AnimationClock() }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(clock, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            snapshotFlow { clock.users > 0 }.collectLatest { active ->
+                if (!active) return@collectLatest
+                val start = SystemClock.uptimeMillis() - clock.now.longValue
+                while (true) {
+                    clock.now.longValue = SystemClock.uptimeMillis() - start
+                    delay(CLOCK_FRAME_MS)
+                }
+            }
+        }
+    }
+    CompositionLocalProvider(LocalAnimationClock provides clock, content = content)
+}
+
+/** S'abonne à l'horloge tant que l'appelant est affiché. À lire dans les phases de dessin uniquement. */
+@Composable
+fun animationClock(): LongState {
+    val clock = LocalAnimationClock.current
+    DisposableEffect(clock) {
+        clock.users++
+        onDispose { clock.users-- }
+    }
+    return clock.now
 }
 
 /** Halo rouge très doux derrière la vitrine. */

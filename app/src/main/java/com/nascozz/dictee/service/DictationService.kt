@@ -132,7 +132,10 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             }
         }
         scope.launch {
-            Graph.settings.state.collect { if (!it.bubbleEnabled && mode == Mode.IDLE) hide() }
+            Graph.settings.state.collect {
+                listenForFields(it.bubbleEnabled)
+                if (!it.bubbleEnabled && mode == Mode.IDLE) hide()
+            }
         }
         // Une mise à jour arrive pendant que l'île est au repos : on la propose tout de suite.
         scope.launch {
@@ -146,22 +149,28 @@ class DictationService : AccessibilityService(), IslandView.Listener {
 
     // --- Suivi du champ de texte ----------------------------------------------------------------
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        when (event.eventType) {
-            AccessibilityEvent.TYPE_VIEW_FOCUSED,
-            AccessibilityEvent.TYPE_VIEW_CLICKED,
-            AccessibilityEvent.TYPE_WINDOWS_CHANGED,
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                main.removeCallbacks(refresh)
-                refreshPending = true
-                main.postDelayed(refresh, 40)
-            }
-            else -> if (!refreshPending) {
-                // Contenu modifié, défilement… : on limite à ~6 rafraîchissements par seconde.
-                refreshPending = true
-                main.postDelayed(refresh, 160)
-            }
+    private var listening = true
+
+    /** Île désactivée dans les réglages : on ne reçoit plus aucun événement (zéro réveil). */
+    private fun listenForFields(enabled: Boolean) {
+        if (enabled == listening) return
+        listening = enabled
+        val info = serviceInfo ?: return
+        info.eventTypes = if (enabled) {
+            AccessibilityEvent.TYPE_VIEW_FOCUSED or AccessibilityEvent.TYPE_VIEW_CLICKED or
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or AccessibilityEvent.TYPE_WINDOWS_CHANGED
+        } else {
+            0
         }
+        serviceInfo = info
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        // Uniquement focus / clic / fenêtres (voir accessibility_service_config) : des événements rares.
+        // Plusieurs à la suite (ouverture du clavier…) ne donnent qu'un seul rafraîchissement.
+        main.removeCallbacks(refresh)
+        refreshPending = true
+        main.postDelayed(refresh, 60)
     }
 
     private val refresh = Runnable {
@@ -172,8 +181,10 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     private fun refreshIsland() {
         if (mode != Mode.IDLE) return
         if (!Graph.settings.current.bubbleEnabled) return hide()
-        val node = findFocusedEditable()
-        if (node == null || !keyboardVisible()) return hide()
+        // Le clavier d'abord : un seul appel, et la plupart du temps il est fermé, donc pas besoin
+        // de chercher le champ (plus coûteux, surtout dans les applis Compose).
+        if (!keyboardVisible()) return hide()
+        val node = findFocusedEditable() ?: return hide()
         target = node
         show()
     }
@@ -217,7 +228,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
             island.setState(idleState())
             return
         }
-        Updater.checkIfStale(30 * 1000L)
+        Updater.checkIfStale(this, 30 * 1000L)
         hole = findHole()
         island.setHole(hole.diameter.toFloat())
         params.height = island.windowHeight
@@ -901,7 +912,7 @@ class DictationService : AccessibilityService(), IslandView.Listener {
     // --- Retours visuels ------------------------------------------------------------------------
 
     private fun succeed(label: String) {
-        Updater.checkIfStale(30 * 60 * 1000L)
+        Updater.checkIfStale(this, 30 * 60 * 1000L)
         mode = Mode.FEEDBACK
         island.setState(IslandView.State.SUCCESS, label)
         vibrate(VibrationEffect.EFFECT_DOUBLE_CLICK)

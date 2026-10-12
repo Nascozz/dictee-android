@@ -1,19 +1,19 @@
 package com.nascozz.dictee.stt
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
-import org.json.JSONObject
+import com.nascozz.dictee.Http
 import java.io.File
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import org.json.JSONObject
 
 class SttException(message: String) : Exception(message)
 
@@ -28,7 +28,7 @@ data class SttRequest(
 )
 
 object Transcriber {
-    private val client = OkHttpClient.Builder()
+    private val client = Http.base.newBuilder()
         .connectTimeout(20, TimeUnit.SECONDS)
         // Les longues dictées peuvent prendre du temps à envoyer et à transcrire.
         .writeTimeout(300, TimeUnit.SECONDS)

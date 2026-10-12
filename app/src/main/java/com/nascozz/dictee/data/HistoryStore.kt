@@ -75,7 +75,7 @@ class HistoryStore(context: Context) {
                     .put("failed", it.failed).put("error", it.error).put("audioPath", it.audioPath)
             )
         }
-        runCatching { file.writeText(arr.toString()) }
+        DiskWriter.write(file, arr.toString())
     }
 
     private fun read(): List<HistoryEntry> = runCatching {
